@@ -1,0 +1,24 @@
+# Dependencies: reinstalled with `npm install`
+node_modules/
+
+# Build output: recreated with `npm run build`
+dist/
+
+# Secrets: NEVER commit these
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# Generated Prisma client: recreated with `npm run db:generate`
+src/generated/
+
+# Editor / OS clutter
+.vscode/*
+!.vscode/settings.json
+.idea/
+.DS_Store
+Thumbs.db
