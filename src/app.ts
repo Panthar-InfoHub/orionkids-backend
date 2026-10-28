@@ -5,6 +5,8 @@ import { pinoHttp } from "pino-http";
 import { env } from "./config/env.js";
 import { logger } from "./lib/logger.js";
 import { prisma } from "./lib/prisma.js";
+import { toNodeHandler } from "better-auth/node";
+import { auth } from "./lib/auth.js";
 import apiRoutes from "./routes/index.js";
 import { notFoundHandler } from "./middlewares/notFound.js";
 import { errorHandler } from "./middlewares/errorHandler.js";
@@ -25,6 +27,9 @@ app.use(
     credentials: true,
   })
 );
+
+// Mount Better Auth handler BEFORE body parsers (Express 5 splat syntax)
+app.all("/api/auth/*splat", toNodeHandler(auth));
 
 // ---- Body parsing ----
 app.use(express.json({ limit: "1mb" }));

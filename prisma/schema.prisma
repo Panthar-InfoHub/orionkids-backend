@@ -7,13 +7,103 @@ datasource db {
   provider = "postgresql"
 }
 
-// Example model: used to test the setup. Replace with your real models later.
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum UserStatus {
+  PENDING
+  ACTIVE
+  RESTRICTED
+}
+
 model User {
-  id        String   @id @default(uuid())
-  email     String   @unique
-  name      String?
+  id                    String        @id
+  name                  String
+  email                 String
+  emailVerified         Boolean       @default(false)
+  image                 String?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+  role                  UserRole      @default(USER)
+  status                UserStatus    @default(PENDING)
+  restrictedReason      String?
+  reviewedAt            DateTime?
+  reviewedById          String?
+  onboardingSubmittedAt DateTime?
+  childProfile          ChildProfile?
+  sessions              Session[]
+  accounts              Account[]
+
+  @@unique([email])
+  @@index([status, createdAt])
+  @@index([status, onboardingSubmittedAt])
+  @@map("user")
+}
+
+model ChildProfile {
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  childName     String
+  age           Int
+  language      String
+  school        String?
+  selectedClass String
+  studentId     String?
+  parentEmail   String
+  parentMobile  String
+  isGuardian    Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("child_profile")
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@map("users")
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String    @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime? @default(now())
+  updatedAt  DateTime? @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
 }

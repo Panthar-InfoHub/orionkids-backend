@@ -30,14 +30,17 @@ export class ValidationError extends AppError {
 }
 
 export class UnauthorizedError extends AppError {
-  constructor(message = "Authentication required") {
-    super(message, 401, "UNAUTHORIZED");
+  constructor(message = "Authentication required", code = "UNAUTHORIZED") {
+    super(message, 401, code);
   }
 }
 
 export class ForbiddenError extends AppError {
-  constructor(message = "You do not have permission to do this") {
-    super(message, 403, "FORBIDDEN");
+  constructor(
+    message = "You do not have permission to do this",
+    code = "FORBIDDEN"
+  ) {
+    super(message, 403, code);
   }
 }
 
