@@ -18,16 +18,28 @@ enum UserStatus {
   RESTRICTED
 }
 
+enum QuestSessionStatus {
+  IN_PROGRESS
+  COMPLETED
+  ABANDONED
+}
+
+enum LevelAttemptStatus {
+  IN_PROGRESS
+  COMPLETED
+  ABANDONED
+}
+
 model User {
-  id                    String        @id
+  id                    String         @id
   name                  String
   email                 String
-  emailVerified         Boolean       @default(false)
+  emailVerified         Boolean        @default(false)
   image                 String?
-  createdAt             DateTime      @default(now())
-  updatedAt             DateTime      @updatedAt
-  role                  UserRole      @default(USER)
-  status                UserStatus    @default(PENDING)
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+  role                  UserRole       @default(USER)
+  status                UserStatus     @default(PENDING)
   restrictedReason      String?
   reviewedAt            DateTime?
   reviewedById          String?
@@ -35,6 +47,7 @@ model User {
   childProfile          ChildProfile?
   sessions              Session[]
   accounts              Account[]
+  questSessions         QuestSession[]
 
   @@unique([email])
   @@index([status, createdAt])
@@ -106,4 +119,84 @@ model Verification {
 
   @@index([identifier])
   @@map("verification")
+}
+
+model QuestSession {
+  id               String             @id @default(cuid())
+  userId           String
+  user             User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status           QuestSessionStatus @default(IN_PROGRESS)
+  currentStage     String             @default("WARM_UP")
+  currentGame      Int                @default(1)
+  currentLevel     Int                @default(1)
+  startedAt        DateTime           @default(now())
+  lastActivityAt   DateTime           @default(now()) @updatedAt
+  completedAt      DateTime?
+  abandonedAt      DateTime?
+  warmUpSubmission WarmUpSubmission?
+  levelAttempts    LevelAttempt[]
+  questReport      QuestReport?
+
+  @@index([userId, status])
+  @@index([userId, startedAt])
+  @@map("quest_session")
+}
+
+model WarmUpSubmission {
+  id             String       @id @default(cuid())
+  questSessionId String       @unique
+  questSession   QuestSession @relation(fields: [questSessionId], references: [id], onDelete: Cascade)
+  userId         String
+  answers        Json
+  completedAt    DateTime     @default(now())
+  createdAt      DateTime     @default(now())
+
+  @@index([userId])
+  @@map("warm_up_submission")
+}
+
+model LevelAttempt {
+  id                    String             @id @default(cuid())
+  questSessionId        String
+  questSession          QuestSession       @relation(fields: [questSessionId], references: [id], onDelete: Cascade)
+  userId                String
+  gameId                Int
+  gameKey               String
+  levelNumber           Int
+  attemptNumber         Int                @default(1)
+  status                LevelAttemptStatus @default(IN_PROGRESS)
+  totalTrials           Int?
+  correctTrials         Int?
+  accuracy              Float?
+  durationMs            Int?
+  averageReactionTimeMs Int?
+  metrics               Json?
+  trialRecords          Json?
+  startedAt             DateTime           @default(now())
+  completedAt           DateTime?
+
+  @@index([questSessionId, gameKey, levelNumber])
+  @@index([userId])
+  @@map("level_attempt")
+}
+
+model QuestReport {
+  id                 String       @id @default(cuid())
+  questSessionId     String       @unique
+  questSession       QuestSession @relation(fields: [questSessionId], references: [id], onDelete: Cascade)
+  userId             String
+  childName          String
+  age                Int
+  selectedClass      String
+  school             String?
+  overallAccuracy    Float
+  totalDurationMs    Int
+  gameSummaries      Json
+  cognitiveFacets    Json
+  growthObservations Json
+  schemaVersion      Int          @default(1)
+  generatedAt        DateTime     @default(now())
+
+  @@index([userId])
+  @@map("quest_report")
 }
