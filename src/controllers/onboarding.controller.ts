@@ -12,5 +12,10 @@ export async function submitOnboardingController(req: Request, res: Response) {
   const validated = submitOnboardingSchema.parse(req.body);
   const result = await submitUserOnboarding(req.authCtx.userId, validated);
 
-  sendSuccess(res, 200, result, "Onboarding submitted successfully and pending approval");
+  sendSuccess(
+    res,
+    200,
+    result,
+    "Onboarding submitted successfully and pending approval"
+  );
 }

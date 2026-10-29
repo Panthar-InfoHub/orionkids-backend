@@ -21,7 +21,7 @@
     "db:studio": "prisma studio",
     "admin:make": "tsx scripts/make-admin.ts",
     "user:verify": "tsx scripts/verify-user.ts",
-    "test": "node --import tsx --test tests/**/*.test.ts",
+    "test": "node --import tsx --test --test-concurrency=1 tests/**/*.test.ts",
     "db:inspect": "tsx scripts/inspect-db.ts",
     "db:check-migrations": "tsx scripts/check-migrations.ts",
     "db:deploy-neon": "tsx scripts/deploy-neon-migration.ts",

@@ -58,6 +58,7 @@ app.get(
 
 // ---- API routes ----
 app.use("/api", apiRoutes);
+app.use("/api/v1", apiRoutes);
 
 // ---- 404, then the error handler: these two must stay LAST, in this order ----
 app.use(notFoundHandler);

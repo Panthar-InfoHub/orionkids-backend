@@ -16,7 +16,10 @@ export async function submitUserOnboarding(
   }
 
   if (user.status === "RESTRICTED") {
-    throw new ForbiddenError("Your account is restricted", "ACCOUNT_RESTRICTED");
+    throw new ForbiddenError(
+      "Your account is restricted",
+      "ACCOUNT_RESTRICTED"
+    );
   }
 
   return prisma.$transaction(async (tx) => {

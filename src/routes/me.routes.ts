@@ -7,6 +7,10 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 const router = Router();
 
 router.get("/", requireAuth, asyncHandler(getMeController));
-router.post("/onboarding", requireAuth, asyncHandler(submitOnboardingController));
+router.post(
+  "/onboarding",
+  requireAuth,
+  asyncHandler(submitOnboardingController)
+);
 
 export default router;

@@ -4,7 +4,10 @@ import crypto from "crypto";
 import { prisma } from "../src/lib/prisma.js";
 
 async function main() {
-  const migrationDir = path.resolve(process.cwd(), "prisma/migrations/20261028200000_add_quest_sessions_and_reports");
+  const migrationDir = path.resolve(
+    process.cwd(),
+    "prisma/migrations/20261028200000_add_quest_sessions_and_reports"
+  );
   const sqlFile = path.join(migrationDir, "migration.sql");
   const migrationName = "20261028200000_add_quest_sessions_and_reports";
 

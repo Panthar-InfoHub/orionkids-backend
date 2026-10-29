@@ -5,6 +5,9 @@ import {
   warmUpAnswersSchema,
   startLevelSchema,
   completeLevelSchema,
+  legacyStroopSubmitSchema,
+  saveCheckpointSchema,
+  GAME_ID_TO_KEY,
 } from "../validators/quest.schema.js";
 import {
   getOrCreateActiveSession,
@@ -14,6 +17,8 @@ import {
   startLevelAttempt,
   completeLevelAttempt,
   generateOrGetReport,
+  getResumeState,
+  saveAttemptCheckpoint,
 } from "../services/quest.service.js";
 
 function getUserId(req: Request): string {
@@ -23,20 +28,27 @@ function getUserId(req: Request): string {
   return req.authCtx.userId;
 }
 
-function getParamString(param: string | string[] | undefined, name: string): string {
+function getParamString(
+  param: string | string[] | undefined,
+  name: string
+): string {
   if (!param || Array.isArray(param)) {
     throw new UnauthorizedError(`Missing or invalid ${name}`, "INVALID_PARAM");
   }
   return param;
 }
 
-export async function getOrCreateSessionController(req: Request, res: Response) {
+export async function getOrCreateSessionController(
+  req: Request,
+  res: Response
+) {
   const userId = getUserId(req);
   const session = await getOrCreateActiveSession(userId);
   sendSuccess(res, 200, session, "Quest session initialized successfully");
 }
 
 export async function getCurrentSessionController(req: Request, res: Response) {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
   const userId = getUserId(req);
   const session = await getCurrentSession(userId);
   sendSuccess(res, 200, session, "Current quest session retrieved");
@@ -86,7 +98,21 @@ export async function completeLevelController(req: Request, res: Response) {
   const validated = completeLevelSchema.parse(req.body);
 
   const result = await completeLevelAttempt(userId, sessionId, validated);
-  sendSuccess(res, 200, result, "Level attempt completed successfully");
+
+  let nextLevelRoute = "/report";
+  if (!result.isQuestComplete) {
+    const nextGameKey = GAME_ID_TO_KEY[result.currentGame];
+    if (nextGameKey) {
+      nextLevelRoute = `/games/${nextGameKey}?level=${result.currentLevel}`;
+    }
+  }
+
+  sendSuccess(
+    res,
+    200,
+    { ...result, nextLevelRoute },
+    "Level attempt completed successfully"
+  );
 }
 
 export async function getReportController(req: Request, res: Response) {
@@ -98,11 +124,15 @@ export async function getReportController(req: Request, res: Response) {
 }
 
 // Backward compatibility handlers for legacy frontend endpoints:
-export async function legacyWarmUpSubmitController(req: Request, res: Response) {
+export async function legacyWarmUpSubmitController(
+  req: Request,
+  res: Response
+) {
   const userId = getUserId(req);
   const rawAnswers = req.body.answers || {};
   const completedAt = req.body.completedAt;
-  const rawSessionId = typeof req.body.sessionId === "string" ? req.body.sessionId : undefined;
+  const rawSessionId =
+    typeof req.body.sessionId === "string" ? req.body.sessionId : undefined;
 
   const result = await saveWarmUpSubmission(
     userId,
@@ -114,29 +144,82 @@ export async function legacyWarmUpSubmitController(req: Request, res: Response) 
   sendSuccess(res, 200, result, "Warm-up answers saved successfully");
 }
 
-export async function legacyStroopLevelSubmitController(req: Request, res: Response) {
+/**
+ * Legacy endpoint: POST /api/games/stroop/level-submit
+ *
+ * Backward-compatibility endpoint called by the Stroop frontend.
+ * Enforces strict progression validation, authentication, session ownership,
+ * and genuine trial verification. Rejects future-level submissions without advancing
+ * the session, ensures idempotent resubmissions, and returns server-authoritative state.
+ */
+export async function legacyStroopLevelSubmitController(
+  req: Request,
+  res: Response
+) {
   const userId = getUserId(req);
-  let sessionId = typeof req.body.sessionId === "string" ? req.body.sessionId : undefined;
-  if (!sessionId) {
-    const active = await getOrCreateActiveSession(userId);
-    sessionId = active.id;
-  }
+  const validated = legacyStroopSubmitSchema.parse(req.body);
+
+  const sessionId =
+    validated.sessionId || (await getOrCreateActiveSession(userId)).id;
 
   const result = await completeLevelAttempt(userId, sessionId, {
     gameKey: "stroop",
-    levelNumber: req.body.level || 1,
+    levelNumber: validated.level,
     attemptNumber: 1,
-    totalTrials: req.body.totalTrials,
-    correctTrials: req.body.correctTrials,
-    accuracy: req.body.accuracy,
-    averageReactionTimeMs: req.body.averageReactionTimeMs,
+    totalTrials: validated.totalTrials,
+    correctTrials: validated.correctTrials,
+    accuracy: validated.accuracy,
+    durationMs: validated.durationMs,
+    averageReactionTimeMs: validated.averageReactionTimeMs,
     metrics: {
-      totalTrials: req.body.totalTrials,
-      correctTrials: req.body.correctTrials,
+      totalTrials: validated.totalTrials,
+      correctTrials: validated.correctTrials,
     },
-    trialRecords: req.body.trials || [],
-    completedAt: req.body.completedAt || new Date().toISOString(),
+    trialRecords: validated.trials || [],
+    completedAt: validated.completedAt || new Date().toISOString(),
   });
 
-  sendSuccess(res, 200, result, "Level progress saved successfully");
+  let nextLevelRoute = "/report";
+  if (!result.isQuestComplete) {
+    const nextGameKey = GAME_ID_TO_KEY[result.currentGame];
+    if (nextGameKey) {
+      nextLevelRoute = `/games/${nextGameKey}?level=${result.currentLevel}`;
+    } else {
+      nextLevelRoute = "/report";
+    }
+  }
+
+  sendSuccess(
+    res,
+    200,
+    {
+      ...result,
+      nextLevelRoute,
+    },
+    result.message || "Level progress saved successfully"
+  );
+}
+
+
+export async function getResumeStateController(req: Request, res: Response) {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+  const userId = getUserId(req);
+  const result = await getResumeState(userId);
+  sendSuccess(res, 200, result, "Quest resume state retrieved successfully");
+}
+
+export async function saveCheckpointController(req: Request, res: Response) {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+  const userId = getUserId(req);
+  const sessionId = getParamString(req.params.sessionId, "sessionId");
+  const attemptId = getParamString(req.params.attemptId, "attemptId");
+  const validated = saveCheckpointSchema.parse(req.body);
+
+  const result = await saveAttemptCheckpoint(
+    userId,
+    sessionId,
+    attemptId,
+    validated.checkpoint
+  );
+  sendSuccess(res, 200, result, "Level attempt checkpoint saved successfully");
 }

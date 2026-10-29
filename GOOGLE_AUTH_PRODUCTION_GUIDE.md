@@ -61,12 +61,14 @@ In your frontend screenshot (`http://localhost:3000/login`), two issues are occu
 Go to [Google Cloud Console](https://console.cloud.google.com/) -> **APIs & Services** -> **Credentials**:
 
 ### 1. Configure OAuth Consent Screen
+
 - **User Type**: External (or Internal if Google Workspace)
 - **App Name**: OrionKids
 - **User Support Email**: your team email
 - **Scopes**: `.../auth/userinfo.email`, `.../auth/userinfo.profile`, `openid`
 
 ### 2. Create OAuth 2.0 Client ID
+
 - **Application Type**: **Web Application**
 - **Name**: `OrionKids Web Client`
 - **Authorized JavaScript origins**:
@@ -201,13 +203,13 @@ app.all("/api/auth/*splat", toNodeHandler(auth));
 
 ## 5. Step 3: Auth Endpoints Mapping Reference
 
-| Endpoint | Method | Caller | Purpose | Request Payload | Response |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `/api/auth/sign-in/social` | `POST` | Frontend Auth Client | Initiates Google OAuth flow | `{ "provider": "google", "callbackURL": "http://localhost:3000/dashboard" }` | `{ "url": "https://accounts.google.com/..." }` or 302 Redirect |
-| `/api/auth/callback/google` | `GET` | Google OAuth Service | Exchanges auth code for session | Query: `?code=...&state=...` | Sets `better-auth.session_token` cookie & redirects to `callbackURL` |
-| `/api/auth/get-session` | `GET` | Frontend Auth Client | Retrieves current Better Auth session | None (uses cookie) | `{ "session": { ... }, "user": { ... } }` or `null` |
-| `/api/auth/sign-out` | `POST` | Frontend Auth Client | Logs out and invalidates session | `{}` | Clears cookie & returns `{ "success": true }` |
-| `/api/me` | `GET` | Frontend API layer | Fetches user profile, role, & status | None (Credentials: include) | `{ "success": true, "data": { "id", "name", "email", "role", "status" } }` |
+| Endpoint                    | Method | Caller               | Purpose                               | Request Payload                                                              | Response                                                                   |
+| :-------------------------- | :----- | :------------------- | :------------------------------------ | :--------------------------------------------------------------------------- | :------------------------------------------------------------------------- |
+| `/api/auth/sign-in/social`  | `POST` | Frontend Auth Client | Initiates Google OAuth flow           | `{ "provider": "google", "callbackURL": "http://localhost:3000/dashboard" }` | `{ "url": "https://accounts.google.com/..." }` or 302 Redirect             |
+| `/api/auth/callback/google` | `GET`  | Google OAuth Service | Exchanges auth code for session       | Query: `?code=...&state=...`                                                 | Sets `better-auth.session_token` cookie & redirects to `callbackURL`       |
+| `/api/auth/get-session`     | `GET`  | Frontend Auth Client | Retrieves current Better Auth session | None (uses cookie)                                                           | `{ "session": { ... }, "user": { ... } }` or `null`                        |
+| `/api/auth/sign-out`        | `POST` | Frontend Auth Client | Logs out and invalidates session      | `{}`                                                                         | Clears cookie & returns `{ "success": true }`                              |
+| `/api/me`                   | `GET`  | Frontend API layer   | Fetches user profile, role, & status  | None (Credentials: include)                                                  | `{ "success": true, "data": { "id", "name", "email", "role", "status" } }` |
 
 ---
 
@@ -357,6 +359,7 @@ export function GoogleSignInButton() {
 When deploying to production (e.g. Frontend on Vercel and Backend on Render/Railway/ECS):
 
 ### Scenario A: Shared Parent Domain (Recommended)
+
 - Frontend: `https://app.orionkids.com`
 - Backend: `https://api.orionkids.com`
 - **Backend `.env` Configuration**:
@@ -369,6 +372,7 @@ When deploying to production (e.g. Frontend on Vercel and Backend on Render/Rail
   Cookies set with `Domain=.orionkids.com`, `SameSite=Lax`, `Secure=true` are automatically shared seamlessly between `api.orionkids.com` and `app.orionkids.com`.
 
 ### Scenario B: Separate Domains (Cross-Origin)
+
 - Frontend: `https://orionkids-frontend.vercel.app`
 - Backend: `https://orionkids-backend.up.railway.app`
 - **Configuration Required**:
@@ -381,10 +385,10 @@ When deploying to production (e.g. Frontend on Vercel and Backend on Render/Rail
 
 ## 8. Common Troubleshooting Guide
 
-| Issue | Symptom | Exact Solution |
-| :--- | :--- | :--- |
-| **Redirect URI Mismatch** | Google displays `Error 400: redirect_uri_mismatch` | Ensure Authorized Redirect URI in Google Console is `http://localhost:8080/api/auth/callback/google` (backend), NOT the frontend port or path. |
-| **Brave Browser Blocking** | Red error on `/api/me`, cookie not set after redirect | In Brave, test with Shields down for `localhost:3000` or enable third-party cookies in dev settings. |
-| **CORS Blocked** | `Access to fetch at ... from origin 'http://localhost:3000' has been blocked by CORS policy` | Check backend `.env`: `CORS_ORIGINS=http://localhost:3000`. Ensure backend is running and `app.use(cors({ origin: env.CORS_ORIGINS, credentials: true }))` is active. |
-| **Backend Not Running** | `GET http://localhost:8080/api/me net::ERR_CONNECTION_REFUSED` | Start backend with `npm run dev` in `/home/dev/codes/orionkids-backend`. |
-| **401 Logged as Error** | DevTools debugger pauses on line 22 of `auth.ts` | Update `fetchCurrentUserProfile()` to treat `res.status === 401` as a normal unauthenticated state returning `null`, rather than treating it as an error. |
+| Issue                      | Symptom                                                                                      | Exact Solution                                                                                                                                                        |
+| :------------------------- | :------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Redirect URI Mismatch**  | Google displays `Error 400: redirect_uri_mismatch`                                           | Ensure Authorized Redirect URI in Google Console is `http://localhost:8080/api/auth/callback/google` (backend), NOT the frontend port or path.                        |
+| **Brave Browser Blocking** | Red error on `/api/me`, cookie not set after redirect                                        | In Brave, test with Shields down for `localhost:3000` or enable third-party cookies in dev settings.                                                                  |
+| **CORS Blocked**           | `Access to fetch at ... from origin 'http://localhost:3000' has been blocked by CORS policy` | Check backend `.env`: `CORS_ORIGINS=http://localhost:3000`. Ensure backend is running and `app.use(cors({ origin: env.CORS_ORIGINS, credentials: true }))` is active. |
+| **Backend Not Running**    | `GET http://localhost:8080/api/me net::ERR_CONNECTION_REFUSED`                               | Start backend with `npm run dev` in `/home/dev/codes/orionkids-backend`.                                                                                              |
+| **401 Logged as Error**    | DevTools debugger pauses on line 22 of `auth.ts`                                             | Update `fetchCurrentUserProfile()` to treat `res.status === 401` as a normal unauthenticated state returning `null`, rather than treating it as an error.             |
