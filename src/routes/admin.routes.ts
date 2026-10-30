@@ -9,6 +9,12 @@ import {
   getUserSessionAttemptsController,
   getUserSessionReportController,
   updateUserStatusController,
+  getUserChildDetailController,
+  getUserChildQuestSessionsController,
+  getUserChildQuestSessionDetailController,
+  getUserChildSessionAttemptsController,
+  getUserChildSessionReportController,
+  getAdminQuestSessionDetailController,
 } from "../controllers/admin.controller.js";
 import { requireAdmin } from "../middlewares/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
@@ -55,6 +61,43 @@ router.get(
 router.get(
   "/users/:userId/quest-sessions/:sessionId/report",
   asyncHandler(getUserSessionReportController)
+);
+
+
+// Child profile detail
+router.get(
+  "/users/:userId/children/:childProfileId",
+  asyncHandler(getUserChildDetailController)
+);
+
+// Child-specific quest sessions
+router.get(
+  "/users/:userId/children/:childProfileId/quest-sessions",
+  asyncHandler(getUserChildQuestSessionsController)
+);
+
+// Child-specific single quest session breakdown
+router.get(
+  "/users/:userId/children/:childProfileId/quest-sessions/:sessionId",
+  asyncHandler(getUserChildQuestSessionDetailController)
+);
+
+// Child-specific level attempts and telemetry
+router.get(
+  "/users/:userId/children/:childProfileId/quest-sessions/:sessionId/attempts",
+  asyncHandler(getUserChildSessionAttemptsController)
+);
+
+// Child-specific quest assessment report
+router.get(
+  "/users/:userId/children/:childProfileId/quest-sessions/:sessionId/report",
+  asyncHandler(getUserChildSessionReportController)
+);
+
+// Direct single quest session breakdown by session ID
+router.get(
+  "/quest-sessions/:sessionId",
+  asyncHandler(getAdminQuestSessionDetailController)
 );
 
 export default router;

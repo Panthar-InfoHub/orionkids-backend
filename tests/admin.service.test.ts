@@ -11,6 +11,12 @@ import {
   getUserSessionAttempts,
   getUserSessionReport,
   setUserStatus,
+  getUserChildDetail,
+  getUserChildQuestSessions,
+  getUserChildQuestSessionDetail,
+  getUserChildSessionAttempts,
+  getUserChildSessionReport,
+  getAdminQuestSessionDetail,
 } from "../src/services/admin.service.js";
 import {
   ForbiddenError,
@@ -46,6 +52,7 @@ describe("Admin User 360° Service & Authorization Test Suite", () => {
 
   let sessionAId = "";
   let attemptA1Id = "";
+  let childAId = "";
 
   before(async () => {
     // 1. Create admin user
@@ -55,7 +62,7 @@ describe("Admin User 360° Service & Authorization Test Suite", () => {
     await prisma.user.create({
       data: {
         ...normalUserA,
-        childProfile: {
+        childProfiles: {
           create: {
             childName: "Charlie",
             age: 8,
@@ -74,9 +81,13 @@ describe("Admin User 360° Service & Authorization Test Suite", () => {
     await prisma.user.create({ data: normalUserB });
 
     // 4. Create quest session for User A
+    const childProfile = await prisma.childProfile.findFirst({ where: { userId: normalUserA.id } });
+    if (childProfile) childAId = childProfile.id;
+
     const sessionA = await prisma.questSession.create({
       data: {
         userId: normalUserA.id,
+        childProfileId: childAId || undefined,
         status: "IN_PROGRESS",
         currentStage: "GAME_1_LEVEL_2",
         currentGame: 1,
@@ -290,4 +301,140 @@ describe("Admin User 360° Service & Authorization Test Suite", () => {
     assert.equal(restricted.status, "RESTRICTED");
     assert.equal(restricted.restrictedReason, "Suspicious activity detected during audit");
   });
+
+  it("11. getUserChildDetail returns comprehensive child & parent info and stats", async () => {
+    const detail = await getUserChildDetail(normalUserA.id, childAId);
+    assert.equal(detail.id, childAId);
+    assert.equal(detail.childName, "Charlie");
+    assert.equal(detail.parentName, "Alice Parent");
+    assert.equal(detail.parentEmail, normalUserA.email);
+    assert.equal(detail.age, 8);
+    assert.equal(detail.selectedClass, "Grade 3");
+    assert.equal(detail.school, "Orion Elementary");
+    assert.equal(detail.stats.totalSessions, 1);
+    assert.equal(detail.stats.sessionStatus, "IN_PROGRESS");
+    assert.equal(detail.stats.completedLevels, 1);
+
+    // NotFound for invalid child ID
+    await assert.rejects(
+      async () => getUserChildDetail(normalUserA.id, "nonexistent_child_xyz"),
+      (err: any) => err instanceof NotFoundError
+    );
+
+    // Forbidden if child does not belong to specified user
+    await assert.rejects(
+      async () => getUserChildDetail(normalUserB.id, childAId),
+      (err: any) => err instanceof ForbiddenError
+    );
+  });
+
+  it("12. getUserChildQuestSessions strictly isolates sessions by childProfileId", async () => {
+    // Create a second child profile for normalUserA with SAME name "Charlie" (repeatable onboarding)
+    const secondChild = await prisma.childProfile.create({
+      data: {
+        userId: normalUserA.id,
+        childName: "Charlie",
+        age: 8,
+        language: "English",
+        selectedClass: "Grade 3",
+        parentEmail: normalUserA.email,
+        parentMobile: "+1234567890",
+      },
+    });
+
+    // Create session strictly for second child
+    const secondSession = await prisma.questSession.create({
+      data: {
+        userId: normalUserA.id,
+        childProfileId: secondChild.id,
+        status: "COMPLETED",
+        currentStage: "COMPLETED",
+        currentGame: 6,
+        currentLevel: 3,
+      },
+    });
+
+    // Fetch Child 1 sessions -> must ONLY contain sessionA
+    const child1Sessions = await getUserChildQuestSessions(normalUserA.id, childAId, {
+      page: 1,
+      limit: 10,
+    });
+    assert.equal(child1Sessions.sessions.length, 1);
+    assert.equal(child1Sessions.sessions[0].id, sessionAId);
+    assert.equal(child1Sessions.sessions[0].childProfileId, childAId);
+
+    // Fetch Child 2 sessions -> must ONLY contain secondSession
+    const child2Sessions = await getUserChildQuestSessions(normalUserA.id, secondChild.id, {
+      page: 1,
+      limit: 10,
+    });
+    assert.equal(child2Sessions.sessions.length, 1);
+    assert.equal(child2Sessions.sessions[0].id, secondSession.id);
+    assert.equal(child2Sessions.sessions[0].childProfileId, secondChild.id);
+
+    // Status filtering works on child sessions
+    const completedChild1 = await getUserChildQuestSessions(normalUserA.id, childAId, {
+      page: 1,
+      limit: 10,
+      status: "COMPLETED",
+    });
+    assert.equal(completedChild1.sessions.length, 0);
+
+    const inProgressChild1 = await getUserChildQuestSessions(normalUserA.id, childAId, {
+      page: 1,
+      limit: 10,
+      status: "IN_PROGRESS",
+    });
+    assert.equal(inProgressChild1.sessions.length, 1);
+
+    // Clean up secondChild and its session
+    await prisma.questSession.delete({ where: { id: secondSession.id } });
+    await prisma.childProfile.delete({ where: { id: secondChild.id } });
+  });
+
+  it("13. getUserChildQuestSessionDetail verifies child ownership and rejects mismatched child ID", async () => {
+    // Valid child and session
+    const detail = await getUserChildQuestSessionDetail(normalUserA.id, childAId, sessionAId);
+    assert.equal(detail.session.id, sessionAId);
+    assert.equal(detail.session.childProfileId, childAId);
+
+    // Create a temporary dummy child under User A
+    const dummyChild = await prisma.childProfile.create({
+      data: {
+        userId: normalUserA.id,
+        childName: "Temporary",
+        age: 7,
+        language: "English",
+        selectedClass: "Grade 2",
+        parentEmail: normalUserA.email,
+        parentMobile: "+1234567890",
+      },
+    });
+
+    // Attempting to access sessionA under dummyChild must be rejected with ForbiddenError
+    await assert.rejects(
+      async () =>
+        getUserChildQuestSessionDetail(normalUserA.id, dummyChild.id, sessionAId),
+      (err: any) => {
+        assert.ok(err instanceof ForbiddenError);
+        assert.equal(err.code, "FORBIDDEN");
+        return true;
+      }
+    );
+
+    // Clean up dummy child
+    await prisma.childProfile.delete({ where: { id: dummyChild.id } });
+  });
+
+  it("14. getAdminQuestSessionDetail allows direct session lookup", async () => {
+    const detail = await getAdminQuestSessionDetail(sessionAId);
+    assert.equal(detail.session.id, sessionAId);
+    assert.equal(detail.session.userId, normalUserA.id);
+
+    await assert.rejects(
+      async () => getAdminQuestSessionDetail("nonexistent_session_id"),
+      (err: any) => err instanceof NotFoundError
+    );
+  });
+
 });

@@ -169,7 +169,7 @@ export async function listUsers(query: ListUsersQuery) {
         onboardingSubmittedAt: true,
         createdAt: true,
         updatedAt: true,
-        childProfile: {
+        childProfiles: {
           select: {
             id: true,
             childName: true,
@@ -184,6 +184,7 @@ export async function listUsers(query: ListUsersQuery) {
             createdAt: true,
             updatedAt: true,
           },
+          orderBy: { createdAt: "asc" },
         },
         _count: {
           select: {
@@ -198,6 +199,8 @@ export async function listUsers(query: ListUsersQuery) {
   return {
     users: users.map((u) => ({
       ...u,
+      childProfile: u.childProfiles[0] || null,
+      childProfiles: u.childProfiles,
       questSessionCount: u._count.questSessions,
     })),
     meta: {
@@ -228,7 +231,7 @@ export async function getUserDetail(userId: string) {
       onboardingSubmittedAt: true,
       createdAt: true,
       updatedAt: true,
-      childProfile: {
+      childProfiles: {
         select: {
           id: true,
           childName: true,
@@ -243,6 +246,7 @@ export async function getUserDetail(userId: string) {
           createdAt: true,
           updatedAt: true,
         },
+        orderBy: { createdAt: "asc" },
       },
       accounts: {
         select: {
@@ -258,13 +262,14 @@ export async function getUserDetail(userId: string) {
     throw new NotFoundError("User not found");
   }
 
-  // Authoritative quest statistics
+  // Authoritative quest statistics aggregated from actual database records
   const [
     totalSessions,
     completedSessions,
     inProgressSessions,
     abandonedSessions,
     latestSession,
+    allUserSessions,
   ] = await Promise.all([
     prisma.questSession.count({ where: { userId } }),
     prisma.questSession.count({ where: { userId, status: "COMPLETED" } }),
@@ -284,7 +289,23 @@ export async function getUserDetail(userId: string) {
         completedAt: true,
       },
     }),
+    prisma.questSession.findMany({
+      where: { userId },
+      include: {
+        levelAttempts: {
+          where: { status: "COMPLETED" },
+          select: { gameKey: true, levelNumber: true },
+        },
+      },
+    }),
   ]);
+
+  // Sum actual completed levels without double counting
+  let totalCompletedLevels = 0;
+  for (const s of allUserSessions) {
+    const prog = computeSessionProgression(s, s.levelAttempts);
+    totalCompletedLevels += prog.highestCompletedIndex;
+  }
 
   return {
     user: {
@@ -300,7 +321,8 @@ export async function getUserDetail(userId: string) {
       onboardingSubmittedAt: user.onboardingSubmittedAt,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
-      childProfile: user.childProfile,
+      childProfile: user.childProfiles[0] || null,
+      childProfiles: user.childProfiles,
       accounts: user.accounts.map((a) => ({
         id: a.id,
         providerId: a.providerId,
@@ -308,11 +330,12 @@ export async function getUserDetail(userId: string) {
       })),
     },
     stats: {
-      childProfileCount: user.childProfile ? 1 : 0,
+      childProfileCount: user.childProfiles.length,
       totalSessions,
       completedSessions,
       inProgressSessions,
       abandonedSessions,
+      totalCompletedLevels,
       latestActivityAt: latestSession?.lastActivityAt || user.updatedAt,
       latestSession,
     },
@@ -320,7 +343,7 @@ export async function getUserDetail(userId: string) {
 }
 
 /**
- * Retrieve child profile(s) scoped to a parent account.
+ * Retrieve child profile(s) scoped to a parent account with comprehensive quest analytics.
  */
 export async function getUserChildren(userId: string) {
   const user = await prisma.user.findUnique({
@@ -331,30 +354,79 @@ export async function getUserChildren(userId: string) {
     throw new NotFoundError("User not found");
   }
 
-  const child = await prisma.childProfile.findUnique({
+  const children = await prisma.childProfile.findMany({
     where: { userId },
-    select: {
-      id: true,
-      userId: true,
-      childName: true,
-      age: true,
-      language: true,
-      school: true,
-      selectedClass: true,
-      studentId: true,
-      parentEmail: true,
-      parentMobile: true,
-      isGuardian: true,
-      createdAt: true,
-      updatedAt: true,
+    orderBy: { createdAt: "asc" },
+    include: {
+      questSessions: {
+        orderBy: { startedAt: "desc" },
+        include: {
+          questReport: { select: { id: true } },
+          levelAttempts: {
+            where: { status: "COMPLETED" },
+            select: { gameKey: true, levelNumber: true },
+          },
+        },
+      },
     },
   });
 
-  return child ? [child] : [];
+  return children.map((c) => {
+    const sessions = c.questSessions || [];
+    const inProgress = sessions.find((s) => s.status === "IN_PROGRESS");
+    const completed = sessions.filter((s) => s.status === "COMPLETED");
+    const latest = sessions[0];
+
+    let sessionStatus: "IN_PROGRESS" | "COMPLETED" | "NOT_STARTED" | "ABANDONED" = "NOT_STARTED";
+    let completedLevels = 0;
+
+    if (inProgress) {
+      sessionStatus = "IN_PROGRESS";
+      const prog = computeSessionProgression(inProgress, inProgress.levelAttempts);
+      completedLevels = prog.highestCompletedIndex;
+    } else if (completed.length > 0) {
+      sessionStatus = "COMPLETED";
+      completedLevels = 18;
+    } else if (sessions.length > 0 && latest) {
+      sessionStatus = latest.status as any;
+    }
+
+    return {
+      id: c.id,
+      userId: c.userId,
+      childName: c.childName,
+      age: c.age,
+      language: c.language,
+      school: c.school,
+      selectedClass: c.selectedClass,
+      studentId: c.studentId,
+      parentEmail: c.parentEmail,
+      parentMobile: c.parentMobile,
+      isGuardian: c.isGuardian,
+      createdAt: c.createdAt,
+      updatedAt: c.updatedAt,
+      totalSessions: sessions.length,
+      sessionStatus,
+      completedLevels,
+      latestActivityAt: latest?.lastActivityAt || c.updatedAt,
+      hasReport: sessions.some((s) => Boolean(s.questReport)),
+      reportId: sessions.find((s) => Boolean(s.questReport))?.questReport?.id || null,
+      sessions: sessions.map((s) => ({
+        id: s.id,
+        status: s.status,
+        currentStage: s.currentStage,
+        currentGame: s.currentGame,
+        currentLevel: s.currentLevel,
+        startedAt: s.startedAt,
+        completedAt: s.completedAt,
+        hasReport: Boolean(s.questReport),
+      })),
+    };
+  });
 }
 
 /**
- * Retrieve all quest sessions for a specific user with pagination and status filtering.
+ * Retrieve all quest sessions for a specific user with pagination, child metadata, and status filtering.
  */
 export async function getUserQuestSessions(
   userId: string,
@@ -383,6 +455,13 @@ export async function getUserQuestSessions(
       take,
       orderBy: { startedAt: "desc" },
       include: {
+        childProfile: {
+          select: {
+            id: true,
+            childName: true,
+            selectedClass: true,
+          },
+        },
         warmUpSubmission: {
           select: {
             id: true,
@@ -420,6 +499,8 @@ export async function getUserQuestSessions(
     return {
       id: s.id,
       userId: s.userId,
+      childProfileId: s.childProfileId || null,
+      childName: s.childProfile?.childName || null,
       status: s.status,
       currentStage: s.currentStage,
       currentGame: s.currentGame,
@@ -456,8 +537,7 @@ export async function getUserQuestSessions(
 }
 
 /**
- * Retrieve comprehensive details for a single quest session,
- * including 6-game level progression and warm-up state.
+ * Retrieve comprehensive progression matrix, checkpoints, and attempt history for a specific quest session.
  */
 export async function getUserQuestSessionDetail(
   userId: string,
@@ -466,6 +546,14 @@ export async function getUserQuestSessionDetail(
   const session = await prisma.questSession.findUnique({
     where: { id: sessionId },
     include: {
+      childProfile: {
+        select: {
+          id: true,
+          childName: true,
+          age: true,
+          selectedClass: true,
+        },
+      },
       warmUpSubmission: true,
       questReport: true,
       levelAttempts: {
@@ -478,7 +566,6 @@ export async function getUserQuestSessionDetail(
     throw new NotFoundError("Quest session not found");
   }
 
-  // Strict ownership check
   if (session.userId !== userId) {
     throw new ForbiddenError(
       "Quest session does not belong to the specified user",
@@ -486,29 +573,29 @@ export async function getUserQuestSessionDetail(
     );
   }
 
-  // Calculate authoritative contiguous progression
   const completedAttempts = session.levelAttempts.filter(
     (a) => a.status === "COMPLETED"
   );
   const prog = computeSessionProgression(session, completedAttempts);
 
-  // Group attempts by gameKey and levelNumber
-  const attemptsByLevel = new Map<string, typeof session.levelAttempts>();
-  for (const a of session.levelAttempts) {
-    const key = `${a.gameKey}_${a.levelNumber}`;
-    if (!attemptsByLevel.has(key)) {
-      attemptsByLevel.set(key, []);
+  // Group attempts by gameKey & levelNumber
+  const attemptsByGameAndLevel = new Map<string, typeof session.levelAttempts>();
+  for (const attempt of session.levelAttempts) {
+    const key = `${attempt.gameKey}-${attempt.levelNumber}`;
+    if (!attemptsByGameAndLevel.has(key)) {
+      attemptsByGameAndLevel.set(key, []);
     }
-    attemptsByLevel.get(key)!.push(a);
+    attemptsByGameAndLevel.get(key)!.push(attempt);
   }
 
-  // Build the 6-game progression matrix
+  // Construct authoritative 6-game progression matrix
   const gamesProgress = CANONICAL_GAMES.map((game) => {
     let completedLevelsForGame = 0;
 
     const levels = [1, 2, 3].map((levelNumber) => {
-      const key = `${game.gameKey}_${levelNumber}`;
-      const levelAttempts = attemptsByLevel.get(key) || [];
+      const key = `${game.gameKey}-${levelNumber}`;
+      const levelAttempts = attemptsByGameAndLevel.get(key) || [];
+
       const completedAttempt = levelAttempts.find(
         (a) => a.status === "COMPLETED"
       );
@@ -573,6 +660,8 @@ export async function getUserQuestSessionDetail(
     session: {
       id: session.id,
       userId: session.userId,
+      childProfileId: session.childProfileId || null,
+      childName: session.childProfile?.childName || null,
       status: session.status,
       currentStage: session.currentStage,
       currentGame: session.currentGame,
@@ -802,4 +891,365 @@ export async function setUserStatus(
   );
 
   return updatedUser;
+}
+
+
+/**
+ * Retrieve comprehensive details for a single child profile scoped to a parent.
+ */
+export async function getUserChildDetail(userId: string, childProfileId: string) {
+  const child = await prisma.childProfile.findUnique({
+    where: { id: childProfileId },
+    include: {
+      user: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+        },
+      },
+      questSessions: {
+        orderBy: { startedAt: "desc" },
+        include: {
+          questReport: { select: { id: true } },
+          levelAttempts: {
+            where: { status: "COMPLETED" },
+            select: { gameKey: true, levelNumber: true },
+          },
+        },
+      },
+    },
+  });
+
+  if (!child) {
+    throw new NotFoundError("Child profile not found");
+  }
+
+  if (child.userId !== userId) {
+    throw new ForbiddenError(
+      "Child profile does not belong to the specified user",
+      "FORBIDDEN"
+    );
+  }
+
+  const sessions = child.questSessions || [];
+  const inProgress = sessions.find((s) => s.status === "IN_PROGRESS");
+  const completed = sessions.filter((s) => s.status === "COMPLETED");
+  const abandoned = sessions.filter((s) => s.status === "ABANDONED");
+  const latest = sessions[0];
+
+  let sessionStatus: "IN_PROGRESS" | "COMPLETED" | "NOT_STARTED" | "ABANDONED" = "NOT_STARTED";
+  let completedLevels = 0;
+
+  if (inProgress) {
+    sessionStatus = "IN_PROGRESS";
+    const prog = computeSessionProgression(inProgress, inProgress.levelAttempts);
+    completedLevels = prog.highestCompletedIndex;
+  } else if (completed.length > 0) {
+    sessionStatus = "COMPLETED";
+    completedLevels = 18;
+  } else if (sessions.length > 0 && latest) {
+    sessionStatus = latest.status as any;
+  }
+
+  return {
+    id: child.id,
+    userId: child.userId,
+    parentName: child.user.name,
+    parentEmail: child.parentEmail || child.user.email,
+    childName: child.childName,
+    age: child.age,
+    language: child.language,
+    school: child.school,
+    selectedClass: child.selectedClass,
+    studentId: child.studentId,
+    parentMobile: child.parentMobile,
+    isGuardian: child.isGuardian,
+    createdAt: child.createdAt,
+    updatedAt: child.updatedAt,
+    stats: {
+      totalSessions: sessions.length,
+      completedSessions: completed.length,
+      inProgressSessions: inProgress ? 1 : 0,
+      abandonedSessions: abandoned.length,
+      completedLevels,
+      sessionStatus,
+      latestActivityAt: latest?.lastActivityAt || child.updatedAt,
+      hasReport: sessions.some((s) => Boolean(s.questReport)),
+      reportId: sessions.find((s) => Boolean(s.questReport))?.questReport?.id || null,
+    },
+  };
+}
+
+/**
+ * Retrieve quest sessions strictly filtered by child profile ID and scoped to the parent.
+ */
+export async function getUserChildQuestSessions(
+  userId: string,
+  childProfileId: string,
+  query: ListQuestSessionsQuery
+) {
+  const child = await prisma.childProfile.findUnique({
+    where: { id: childProfileId },
+    select: { id: true, userId: true },
+  });
+
+  if (!child) {
+    throw new NotFoundError("Child profile not found");
+  }
+
+  if (child.userId !== userId) {
+    throw new ForbiddenError(
+      "Child profile does not belong to the specified user",
+      "FORBIDDEN"
+    );
+  }
+
+  const where: any = {
+    userId,
+    childProfileId,
+  };
+
+  if (query.status) {
+    where.status = query.status;
+  }
+
+  const skip = (query.page - 1) * query.limit;
+  const take = query.limit;
+
+  const [sessions, total] = await Promise.all([
+    prisma.questSession.findMany({
+      where,
+      skip,
+      take,
+      orderBy: { startedAt: "desc" },
+      include: {
+        childProfile: {
+          select: {
+            id: true,
+            childName: true,
+            selectedClass: true,
+          },
+        },
+        warmUpSubmission: {
+          select: {
+            id: true,
+            completedAt: true,
+          },
+        },
+        questReport: {
+          select: {
+            id: true,
+            generatedAt: true,
+            overallAccuracy: true,
+            totalDurationMs: true,
+          },
+        },
+        levelAttempts: {
+          where: { status: "COMPLETED" },
+          select: { gameKey: true, levelNumber: true },
+        },
+        _count: {
+          select: { levelAttempts: true },
+        },
+      },
+    }),
+    prisma.questSession.count({ where }),
+  ]);
+
+  const formattedSessions = sessions.map((s) => {
+    const prog = computeSessionProgression(s, s.levelAttempts);
+
+    return {
+      id: s.id,
+      userId: s.userId,
+      childProfileId: s.childProfileId || null,
+      childName: s.childProfile?.childName || null,
+      status: s.status,
+      currentStage: s.currentStage,
+      currentGame: s.currentGame,
+      currentLevel: s.currentLevel,
+      startedAt: s.startedAt,
+      lastActivityAt: s.lastActivityAt,
+      completedAt: s.completedAt,
+      abandonedAt: s.abandonedAt,
+      warmUpCompleted: Boolean(s.warmUpSubmission),
+      completedLevelsCount: prog.highestCompletedIndex,
+      totalLevels: 18,
+      hasReport: Boolean(s.questReport),
+      report: s.questReport
+        ? {
+            id: s.questReport.id,
+            generatedAt: s.questReport.generatedAt,
+            overallAccuracy: s.questReport.overallAccuracy,
+            totalDurationMs: s.questReport.totalDurationMs,
+          }
+        : null,
+      totalAttemptsCount: s._count.levelAttempts,
+    };
+  });
+
+  return {
+    sessions: formattedSessions,
+    meta: {
+      page: query.page,
+      limit: query.limit,
+      total,
+      totalPages: Math.ceil(total / query.limit),
+    },
+  };
+}
+
+/**
+ * Retrieve comprehensive progression matrix for a single quest session,
+ * strictly verifying that it belongs to both the user and the specified child profile.
+ */
+export async function getUserChildQuestSessionDetail(
+  userId: string,
+  childProfileId: string,
+  sessionId: string
+) {
+  const child = await prisma.childProfile.findUnique({
+    where: { id: childProfileId },
+    select: { id: true, userId: true },
+  });
+
+  if (!child) {
+    throw new NotFoundError("Child profile not found");
+  }
+
+  if (child.userId !== userId) {
+    throw new ForbiddenError(
+      "Child profile does not belong to the specified user",
+      "FORBIDDEN"
+    );
+  }
+
+  const detail = await getUserQuestSessionDetail(userId, sessionId);
+
+  if (detail.session.childProfileId !== childProfileId) {
+    throw new ForbiddenError(
+      "Quest session does not belong to the specified child profile",
+      "FORBIDDEN"
+    );
+  }
+
+  return detail;
+}
+
+/**
+ * Retrieve level attempts for a quest session strictly verifying ownership of child and user.
+ */
+export async function getUserChildSessionAttempts(
+  userId: string,
+  childProfileId: string,
+  sessionId: string,
+  query: ListLevelAttemptsQuery
+) {
+  const child = await prisma.childProfile.findUnique({
+    where: { id: childProfileId },
+    select: { id: true, userId: true },
+  });
+
+  if (!child) {
+    throw new NotFoundError("Child profile not found");
+  }
+
+  if (child.userId !== userId) {
+    throw new ForbiddenError(
+      "Child profile does not belong to the specified user",
+      "FORBIDDEN"
+    );
+  }
+
+  const session = await prisma.questSession.findUnique({
+    where: { id: sessionId },
+    select: { id: true, userId: true, childProfileId: true },
+  });
+
+  if (!session) {
+    throw new NotFoundError("Quest session not found");
+  }
+
+  if (session.userId !== userId) {
+    throw new ForbiddenError(
+      "Quest session does not belong to the specified user",
+      "FORBIDDEN"
+    );
+  }
+
+  if (session.childProfileId !== childProfileId) {
+    throw new ForbiddenError(
+      "Quest session does not belong to the specified child profile",
+      "FORBIDDEN"
+    );
+  }
+
+  return getUserSessionAttempts(userId, sessionId, query);
+}
+
+/**
+ * Retrieve assessment report for a quest session strictly verifying ownership of child and user.
+ */
+export async function getUserChildSessionReport(
+  userId: string,
+  childProfileId: string,
+  sessionId: string
+) {
+  const child = await prisma.childProfile.findUnique({
+    where: { id: childProfileId },
+    select: { id: true, userId: true },
+  });
+
+  if (!child) {
+    throw new NotFoundError("Child profile not found");
+  }
+
+  if (child.userId !== userId) {
+    throw new ForbiddenError(
+      "Child profile does not belong to the specified user",
+      "FORBIDDEN"
+    );
+  }
+
+  const session = await prisma.questSession.findUnique({
+    where: { id: sessionId },
+    select: { id: true, userId: true, childProfileId: true },
+  });
+
+  if (!session) {
+    throw new NotFoundError("Quest session not found");
+  }
+
+  if (session.userId !== userId) {
+    throw new ForbiddenError(
+      "Quest session does not belong to the specified user",
+      "FORBIDDEN"
+    );
+  }
+
+  if (session.childProfileId !== childProfileId) {
+    throw new ForbiddenError(
+      "Quest session does not belong to the specified child profile",
+      "FORBIDDEN"
+    );
+  }
+
+  return getUserSessionReport(userId, sessionId);
+}
+
+/**
+ * Direct lookup for an individual quest session for admin inspection.
+ */
+export async function getAdminQuestSessionDetail(sessionId: string) {
+  const session = await prisma.questSession.findUnique({
+    where: { id: sessionId },
+    select: { id: true, userId: true },
+  });
+
+  if (!session) {
+    throw new NotFoundError("Quest session not found");
+  }
+
+  return getUserQuestSessionDetail(session.userId, sessionId);
 }

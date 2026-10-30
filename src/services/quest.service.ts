@@ -70,15 +70,50 @@ export function computeSessionProgression(
   };
 }
 
+export async function getOrCreateActiveSession(
+  userId: string,
+  childProfileId?: string
+) {
+  let resolvedChildId = childProfileId;
 
-export async function getOrCreateActiveSession(userId: string) {
+  if (resolvedChildId) {
+    const child = await prisma.childProfile.findUnique({
+      where: { id: resolvedChildId },
+    });
+    if (!child) {
+      throw new NotFoundError("Child profile not found");
+    }
+    if (child.userId !== userId) {
+      throw new ForbiddenError(
+        "You do not have access to this child profile",
+        "ACCESS_DENIED"
+      );
+    }
+  } else {
+    // If no childProfileId is supplied, check if parent has exactly 1 child profile
+    const children = await prisma.childProfile.findMany({
+      where: { userId },
+      orderBy: { createdAt: "asc" },
+    });
+    if (children.length === 1 && children[0]) {
+      resolvedChildId = children[0].id;
+    }
+  }
+
+  const where: any = {
+    userId,
+    status: "IN_PROGRESS",
+  };
+
+  if (resolvedChildId) {
+    where.childProfileId = resolvedChildId;
+  }
+
   // Check if there is an in-progress session
   let session = await prisma.questSession.findFirst({
-    where: {
-      userId,
-      status: "IN_PROGRESS",
-    },
+    where,
     include: {
+      childProfile: true,
       warmUpSubmission: true,
       levelAttempts: {
         where: { status: "COMPLETED" },
@@ -100,12 +135,14 @@ export async function getOrCreateActiveSession(userId: string) {
     session = await prisma.questSession.create({
       data: {
         userId,
+        childProfileId: resolvedChildId || null,
         status: "IN_PROGRESS",
         currentStage: "WARM_UP",
         currentGame: 1,
         currentLevel: 1,
       },
       include: {
+        childProfile: true,
         warmUpSubmission: true,
         levelAttempts: {
           where: { status: "COMPLETED" },
@@ -136,6 +173,7 @@ export async function getOrCreateActiveSession(userId: string) {
         lastActivityAt: new Date(),
       },
       include: {
+        childProfile: true,
         warmUpSubmission: true,
         levelAttempts: {
           where: { status: "COMPLETED" },
@@ -156,14 +194,41 @@ export async function getOrCreateActiveSession(userId: string) {
   return formatSessionResponse(session);
 }
 
-export async function getCurrentSession(userId: string) {
+export async function getCurrentSession(
+  userId: string,
+  childProfileId?: string
+) {
+  const whereInProgress: any = {
+    userId,
+    status: "IN_PROGRESS",
+  };
+  const whereCompleted: any = {
+    userId,
+    status: "COMPLETED",
+  };
+
+  if (childProfileId) {
+    const child = await prisma.childProfile.findUnique({
+      where: { id: childProfileId },
+    });
+    if (!child) {
+      throw new NotFoundError("Child profile not found");
+    }
+    if (child.userId !== userId) {
+      throw new ForbiddenError(
+        "You do not have access to this child profile",
+        "ACCESS_DENIED"
+      );
+    }
+    whereInProgress.childProfileId = childProfileId;
+    whereCompleted.childProfileId = childProfileId;
+  }
+
   // 1. Check in-progress session
   const activeSession = await prisma.questSession.findFirst({
-    where: {
-      userId,
-      status: "IN_PROGRESS",
-    },
+    where: whereInProgress,
     include: {
+      childProfile: true,
       warmUpSubmission: true,
       levelAttempts: {
         where: { status: "COMPLETED" },
@@ -194,6 +259,7 @@ export async function getCurrentSession(userId: string) {
           lastActivityAt: new Date(),
         },
         include: {
+          childProfile: true,
           warmUpSubmission: true,
           levelAttempts: {
             where: { status: "COMPLETED" },
@@ -216,11 +282,9 @@ export async function getCurrentSession(userId: string) {
 
   // 2. Otherwise get most recent completed session
   const latestCompleted = await prisma.questSession.findFirst({
-    where: {
-      userId,
-      status: "COMPLETED",
-    },
+    where: whereCompleted,
     include: {
+      childProfile: true,
       warmUpSubmission: true,
       questReport: {
         select: {
@@ -257,6 +321,7 @@ export async function getSessionById(userId: string, sessionId: string) {
   const session = await prisma.questSession.findUnique({
     where: { id: sessionId },
     include: {
+      childProfile: true,
       warmUpSubmission: true,
       levelAttempts: {
         where: { status: "COMPLETED" },
@@ -349,7 +414,7 @@ export async function saveWarmUpSubmission(
     success: true,
     sessionId: result.session.id,
     currentStage: result.session.currentStage,
-    nextGameRoute: "/games/stroop?game=1&level=1",
+    nextGameRoute: `/games/stroop?level=1&sessionId=${result.session.id}`,
   };
 }
 
@@ -456,12 +521,11 @@ export async function startLevelAttempt(
 
   return {
     attemptId: attempt.id,
-    sessionId: currentSession.id,
+    sessionId: session.id,
     gameKey,
     levelNumber,
     status: attempt.status,
     attemptNumber: attempt.attemptNumber,
-    startedAt: attempt.startedAt,
   };
 }
 
@@ -470,7 +534,11 @@ export async function completeLevelAttempt(
   sessionId: string,
   input: CompleteLevelInput
 ) {
-  if (input.totalTrials !== undefined && input.totalTrials <= 0) {
+  // Reject placeholder/synthetic completion
+  if (
+    input.totalTrials !== undefined &&
+    input.totalTrials <= 0
+  ) {
     throw new ValidationError(
       "Level completion requires genuine gameplay trials (totalTrials must be greater than 0)"
     );
@@ -626,7 +694,6 @@ export async function completeLevelAttempt(
 
       // 2. First completion of this level:
       // Concurrency guard: Atomically advance session state first.
-      // updateMany with WHERE condition ensures only 1 concurrent request matches.
       const newHighest = Math.max(prog.highestCompletedIndex, requestedIndex);
       let nextGame: number;
       let nextLevel: number;
@@ -703,7 +770,7 @@ export async function completeLevelAttempt(
         });
       }
 
-      // Persist the completed attempt (only the winning request reaches here)
+      // Persist the completed attempt
       let finalAttemptId: string;
       if (activeAttempt) {
         const updated = await tx.levelAttempt.update({
@@ -800,9 +867,18 @@ export async function generateOrGetReport(userId: string, sessionId: string) {
     return session.questReport;
   }
 
-  const childProfile = await prisma.childProfile.findUnique({
-    where: { userId },
-  });
+  let childProfile: any = null;
+  if (session.childProfileId) {
+    childProfile = await prisma.childProfile.findUnique({
+      where: { id: session.childProfileId },
+    });
+  }
+  if (!childProfile) {
+    childProfile = await prisma.childProfile.findFirst({
+      where: { userId },
+      orderBy: { createdAt: "asc" },
+    });
+  }
 
   const childName = childProfile?.childName || "Young Explorer";
   const age = childProfile?.age || 7;
@@ -887,7 +963,6 @@ export async function generateOrGetReport(userId: string, sessionId: string) {
     };
   }
 
-
   const warmUpAnswers =
     (session.warmUpSubmission?.answers as Record<string, string>) || {};
   const copingStrategy = warmUpAnswers["2"] || "retry";
@@ -947,6 +1022,7 @@ export async function generateOrGetReport(userId: string, sessionId: string) {
       data: {
         questSessionId: sessionId,
         userId,
+        childProfileId: session.childProfileId || childProfile?.id || null,
         childName,
         age,
         selectedClass,
@@ -979,6 +1055,8 @@ function formatSessionResponse(session: any) {
   return {
     id: session.id,
     userId: session.userId,
+    childProfileId: session.childProfileId || null,
+    childName: session.childProfile?.childName || null,
     status: session.status,
     currentStage: session.currentStage,
     currentGame: session.currentGame,
@@ -995,15 +1073,33 @@ function formatSessionResponse(session: any) {
   };
 }
 
+export async function getResumeState(userId: string, childProfileId?: string) {
+  const where: any = {
+    userId,
+    status: "IN_PROGRESS",
+  };
 
-export async function getResumeState(userId: string) {
+  if (childProfileId) {
+    const child = await prisma.childProfile.findUnique({
+      where: { id: childProfileId },
+    });
+    if (!child) {
+      throw new NotFoundError("Child profile not found");
+    }
+    if (child.userId !== userId) {
+      throw new ForbiddenError(
+        "You do not have access to this child profile",
+        "ACCESS_DENIED"
+      );
+    }
+    where.childProfileId = childProfileId;
+  }
+
   // Query only the authenticated user's IN_PROGRESS quest sessions (never trust client userId)
   const activeSessions = await prisma.questSession.findMany({
-    where: {
-      userId,
-      status: "IN_PROGRESS",
-    },
+    where,
     include: {
+      childProfile: true,
       warmUpSubmission: true,
       levelAttempts: {
         orderBy: { attemptNumber: "desc" },
@@ -1018,6 +1114,7 @@ export async function getResumeState(userId: string) {
       hasResumableQuest: false,
       destination: "/",
       sessionId: null,
+      childProfileId: childProfileId || null,
       currentStage: null,
       currentGame: null,
       currentLevel: null,
@@ -1026,17 +1123,39 @@ export async function getResumeState(userId: string) {
     };
   }
 
-  // Deterministic duplicate resolution:
-  // If multiple exist, take the most recent by startedAt, and safely mark older ones as ABANDONED
-  if (activeSessions.length > 1) {
-    const staleSessionIds = activeSessions.slice(1).map((s) => s.id);
-    await prisma.questSession.updateMany({
-      where: { id: { in: staleSessionIds } },
-      data: {
-        status: "ABANDONED",
-        abandonedAt: new Date(),
-      },
-    });
+  // Deterministic duplicate resolution ONLY for sessions of the same child:
+  if (childProfileId) {
+    if (activeSessions.length > 1) {
+      const staleSessionIds = activeSessions.slice(1).map((s) => s.id);
+      await prisma.questSession.updateMany({
+        where: { id: { in: staleSessionIds } },
+        data: {
+          status: "ABANDONED",
+          abandonedAt: new Date(),
+        },
+      });
+    }
+  } else {
+    // If childProfileId is not specified, group by childProfileId so we don't cross-abandon
+    const seenChildren = new Set<string>();
+    const staleIds: string[] = [];
+    for (const s of activeSessions) {
+      const key = s.childProfileId || "unassigned";
+      if (seenChildren.has(key)) {
+        staleIds.push(s.id);
+      } else {
+        seenChildren.add(key);
+      }
+    }
+    if (staleIds.length > 0) {
+      await prisma.questSession.updateMany({
+        where: { id: { in: staleIds } },
+        data: {
+          status: "ABANDONED",
+          abandonedAt: new Date(),
+        },
+      });
+    }
   }
 
   // Case B: Warm-up has not been submitted
@@ -1044,6 +1163,7 @@ export async function getResumeState(userId: string) {
     return {
       hasResumableQuest: true,
       sessionId: primarySession.id,
+      childProfileId: primarySession.childProfileId || null,
       destination: "/warm-up",
       currentStage: "WARM_UP",
       currentGame: 1,
@@ -1077,6 +1197,7 @@ export async function getResumeState(userId: string) {
       hasResumableQuest: false,
       destination: "/report",
       sessionId: primarySession.id,
+      childProfileId: primarySession.childProfileId || null,
       currentStage: "COMPLETED",
       currentGame: 6,
       currentLevel: 3,
@@ -1102,6 +1223,7 @@ export async function getResumeState(userId: string) {
   return {
     hasResumableQuest: true,
     sessionId: primarySession.id,
+    childProfileId: primarySession.childProfileId || null,
     destination,
     currentStage: activeStage,
     currentGame: activeGame,
@@ -1115,9 +1237,8 @@ export async function saveAttemptCheckpoint(
   userId: string,
   sessionId: string,
   attemptId: string,
-  checkpoint: any
+  checkpoint: Record<string, any>
 ) {
-  // Validate session exists and is owned by user
   const session = await prisma.questSession.findUnique({
     where: { id: sessionId },
   });
@@ -1125,45 +1246,43 @@ export async function saveAttemptCheckpoint(
   if (!session) {
     throw new NotFoundError("Quest session not found");
   }
+
   if (session.userId !== userId) {
     throw new ForbiddenError("You do not own this quest session");
   }
+
   if (session.status !== "IN_PROGRESS") {
-    throw new ValidationError("Cannot save checkpoint for non-active quest session");
+    throw new ValidationError("Cannot save checkpoint on a closed quest session");
   }
 
-  // Validate attempt exists, belongs to session & user, and is IN_PROGRESS
   const attempt = await prisma.levelAttempt.findUnique({
     where: { id: attemptId },
   });
 
-  if (!attempt || attempt.questSessionId !== sessionId || attempt.userId !== userId) {
-    throw new NotFoundError("Level attempt not found for this quest session");
+  if (!attempt || attempt.questSessionId !== sessionId) {
+    throw new NotFoundError("Level attempt not found in this quest session");
+  }
+
+  if (attempt.userId !== userId) {
+    throw new ForbiddenError("You do not own this level attempt");
   }
 
   if (attempt.status !== "IN_PROGRESS") {
-    throw new ValidationError("Cannot save checkpoint on a completed or abandoned attempt");
+    throw new ValidationError(
+      "Cannot save checkpoint on an attempt that is already completed or abandoned"
+    );
   }
 
-  // Validate that the attempt matches current authorized game and level
-  const attemptGameId = GAME_KEY_TO_ID[attempt.gameKey as keyof typeof GAME_KEY_TO_ID];
-  if (
-    attemptGameId !== session.currentGame ||
-    attempt.levelNumber !== session.currentLevel
-  ) {
-    throw new ValidationError("Stale attempt: checkpoint cannot overwrite newer stage");
-  }
-
-  const updatedMetrics = {
-    ...((attempt.metrics as object) || {}),
-    checkpoint,
-    lastCheckpointAt: new Date().toISOString(),
-  };
+  const currentMetrics = (attempt.metrics as Record<string, any>) || {};
 
   const updatedAttempt = await prisma.levelAttempt.update({
     where: { id: attemptId },
     data: {
-      metrics: updatedMetrics,
+      metrics: {
+        ...currentMetrics,
+        checkpoint,
+        checkpointSavedAt: new Date().toISOString(),
+      },
     },
   });
 
@@ -1175,6 +1294,6 @@ export async function saveAttemptCheckpoint(
   return {
     success: true,
     attemptId: updatedAttempt.id,
-    checkpoint,
+    checkpointSavedAt: new Date().toISOString(),
   };
 }

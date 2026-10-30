@@ -1,7 +1,7 @@
 import { prisma } from "../lib/prisma.js";
 
 export async function getCurrentUserProfile(userId: string) {
-  return prisma.user.findUniqueOrThrow({
+  const user = await prisma.user.findUniqueOrThrow({
     where: { id: userId },
     select: {
       id: true,
@@ -12,7 +12,7 @@ export async function getCurrentUserProfile(userId: string) {
       status: true,
       restrictedReason: true,
       onboardingSubmittedAt: true,
-      childProfile: {
+      childProfiles: {
         select: {
           id: true,
           childName: true,
@@ -24,8 +24,16 @@ export async function getCurrentUserProfile(userId: string) {
           parentEmail: true,
           parentMobile: true,
           isGuardian: true,
+          createdAt: true,
+          updatedAt: true,
         },
+        orderBy: { createdAt: "asc" },
       },
     },
   });
+
+  return {
+    ...user,
+    childProfile: user.childProfiles[0] || null,
+  };
 }

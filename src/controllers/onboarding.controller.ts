@@ -10,12 +10,22 @@ export async function submitOnboardingController(req: Request, res: Response) {
   }
 
   const validated = submitOnboardingSchema.parse(req.body);
-  const result = await submitUserOnboarding(req.authCtx.userId, validated);
+  const headerKey = req.headers["x-idempotency-key"];
+  const idempotencyKey =
+    typeof headerKey === "string" && headerKey.trim().length > 0
+      ? headerKey.trim()
+      : validated.idempotencyKey;
+
+  const result = await submitUserOnboarding(
+    req.authCtx.userId,
+    validated,
+    idempotencyKey
+  );
 
   sendSuccess(
     res,
     200,
     result,
-    "Onboarding submitted successfully and pending approval"
+    "Onboarding submitted successfully"
   );
 }

@@ -20,6 +20,7 @@ export const submitOnboardingSchema = z.object({
   isGuardian: z.boolean().refine((val) => val === true, {
     message: "Parent or guardian consent is required",
   }),
+  idempotencyKey: z.string().trim().max(100).optional(),
 });
 
 export type SubmitOnboardingInput = z.infer<typeof submitOnboardingSchema>;

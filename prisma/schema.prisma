@@ -44,10 +44,11 @@ model User {
   reviewedAt            DateTime?
   reviewedById          String?
   onboardingSubmittedAt DateTime?
-  childProfile          ChildProfile?
+  childProfiles         ChildProfile[]
   sessions              Session[]
   accounts              Account[]
   questSessions         QuestSession[]
+  questReports          QuestReport[]
 
   @@unique([email])
   @@index([status, createdAt])
@@ -56,9 +57,9 @@ model User {
 }
 
 model ChildProfile {
-  id            String   @id @default(cuid())
-  userId        String   @unique
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id            String         @id @default(cuid())
+  userId        String
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   childName     String
   age           Int
   language      String
@@ -67,10 +68,13 @@ model ChildProfile {
   studentId     String?
   parentEmail   String
   parentMobile  String
-  isGuardian    Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  isGuardian    Boolean        @default(true)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  questSessions QuestSession[]
+  questReports  QuestReport[]
 
+  @@index([userId])
   @@map("child_profile")
 }
 
@@ -125,6 +129,8 @@ model QuestSession {
   id               String             @id @default(cuid())
   userId           String
   user             User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  childProfileId   String?
+  childProfile     ChildProfile?      @relation(fields: [childProfileId], references: [id], onDelete: SetNull)
   status           QuestSessionStatus @default(IN_PROGRESS)
   currentStage     String             @default("WARM_UP")
   currentGame      Int                @default(1)
@@ -139,6 +145,8 @@ model QuestSession {
 
   @@index([userId, status])
   @@index([userId, startedAt])
+  @@index([childProfileId])
+  @@index([childProfileId, status])
   @@map("quest_session")
 }
 
@@ -181,10 +189,13 @@ model LevelAttempt {
 }
 
 model QuestReport {
-  id                 String       @id @default(cuid())
-  questSessionId     String       @unique
-  questSession       QuestSession @relation(fields: [questSessionId], references: [id], onDelete: Cascade)
+  id                 String        @id @default(cuid())
+  questSessionId     String        @unique
+  questSession       QuestSession  @relation(fields: [questSessionId], references: [id], onDelete: Cascade)
   userId             String
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  childProfileId     String?
+  childProfile       ChildProfile? @relation(fields: [childProfileId], references: [id], onDelete: SetNull)
   childName          String
   age                Int
   selectedClass      String
@@ -194,9 +205,10 @@ model QuestReport {
   gameSummaries      Json
   cognitiveFacets    Json
   growthObservations Json
-  schemaVersion      Int          @default(1)
-  generatedAt        DateTime     @default(now())
+  schemaVersion      Int           @default(1)
+  generatedAt        DateTime      @default(now())
 
   @@index([userId])
+  @@index([childProfileId])
   @@map("quest_report")
 }

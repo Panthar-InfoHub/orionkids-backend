@@ -72,3 +72,25 @@ export const updateUserStatusBodySchema = z
   );
 
 export type UpdateUserStatusBody = z.infer<typeof updateUserStatusBodySchema>;
+
+
+export const userChildParamsSchema = z.object({
+  userId: z.string().min(1, "User ID is required"),
+  childProfileId: z.string().min(1, "Child Profile ID is required"),
+});
+
+export type UserChildParams = z.infer<typeof userChildParamsSchema>;
+
+export const userChildSessionParamsSchema = z.object({
+  userId: z.string().min(1, "User ID is required"),
+  childProfileId: z.string().min(1, "Child Profile ID is required"),
+  sessionId: z.string().min(1, "Session ID is required"),
+});
+
+export type UserChildSessionParams = z.infer<typeof userChildSessionParamsSchema>;
+
+export const sessionIdParamSchema = z.object({
+  sessionId: z.string().min(1, "Session ID is required"),
+});
+
+export type SessionIdParam = z.infer<typeof sessionIdParamSchema>;

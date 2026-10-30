@@ -7,6 +7,7 @@ import {
   completeLevelSchema,
   legacyStroopSubmitSchema,
   saveCheckpointSchema,
+  createSessionSchema,
   GAME_ID_TO_KEY,
 } from "../validators/quest.schema.js";
 import {
@@ -43,14 +44,26 @@ export async function getOrCreateSessionController(
   res: Response
 ) {
   const userId = getUserId(req);
-  const session = await getOrCreateActiveSession(userId);
+  const rawChildId = req.body?.childProfileId || req.query?.childProfileId;
+  const childProfileId =
+    typeof rawChildId === "string" && rawChildId.trim().length > 0
+      ? rawChildId.trim()
+      : undefined;
+
+  const session = await getOrCreateActiveSession(userId, childProfileId);
   sendSuccess(res, 200, session, "Quest session initialized successfully");
 }
 
 export async function getCurrentSessionController(req: Request, res: Response) {
   res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
   const userId = getUserId(req);
-  const session = await getCurrentSession(userId);
+  const rawChildId = req.query?.childProfileId;
+  const childProfileId =
+    typeof rawChildId === "string" && rawChildId.trim().length > 0
+      ? rawChildId.trim()
+      : undefined;
+
+  const session = await getCurrentSession(userId, childProfileId);
   sendSuccess(res, 200, session, "Current quest session retrieved");
 }
 
@@ -99,11 +112,11 @@ export async function completeLevelController(req: Request, res: Response) {
 
   const result = await completeLevelAttempt(userId, sessionId, validated);
 
-  let nextLevelRoute = "/report";
+  let nextLevelRoute = `/report?sessionId=${sessionId}`;
   if (!result.isQuestComplete) {
     const nextGameKey = GAME_ID_TO_KEY[result.currentGame];
     if (nextGameKey) {
-      nextLevelRoute = `/games/${nextGameKey}?level=${result.currentLevel}`;
+      nextLevelRoute = `/games/${nextGameKey}?level=${result.currentLevel}&sessionId=${sessionId}`;
     }
   }
 
@@ -179,13 +192,13 @@ export async function legacyStroopLevelSubmitController(
     completedAt: validated.completedAt || new Date().toISOString(),
   });
 
-  let nextLevelRoute = "/report";
+  let nextLevelRoute = `/report?sessionId=${sessionId}`;
   if (!result.isQuestComplete) {
     const nextGameKey = GAME_ID_TO_KEY[result.currentGame];
     if (nextGameKey) {
-      nextLevelRoute = `/games/${nextGameKey}?level=${result.currentLevel}`;
+      nextLevelRoute = `/games/${nextGameKey}?level=${result.currentLevel}&sessionId=${sessionId}`;
     } else {
-      nextLevelRoute = "/report";
+      nextLevelRoute = `/report?sessionId=${sessionId}`;
     }
   }
 
@@ -200,11 +213,16 @@ export async function legacyStroopLevelSubmitController(
   );
 }
 
-
 export async function getResumeStateController(req: Request, res: Response) {
   res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
   const userId = getUserId(req);
-  const result = await getResumeState(userId);
+  const rawChildId = req.query?.childProfileId;
+  const childProfileId =
+    typeof rawChildId === "string" && rawChildId.trim().length > 0
+      ? rawChildId.trim()
+      : undefined;
+
+  const result = await getResumeState(userId, childProfileId);
   sendSuccess(res, 200, result, "Quest resume state retrieved successfully");
 }
 

@@ -115,3 +115,9 @@ export const saveCheckpointSchema = z.object({
 });
 
 export type SaveCheckpointInput = z.infer<typeof saveCheckpointSchema>;
+
+export const createSessionSchema = z.object({
+  childProfileId: z.string().trim().min(1).optional(),
+});
+
+export type CreateSessionInput = z.infer<typeof createSessionSchema>;

@@ -7,6 +7,9 @@ import {
   listLevelAttemptsQuerySchema,
   updateUserStatusParamsSchema,
   updateUserStatusBodySchema,
+  userChildParamsSchema,
+  userChildSessionParamsSchema,
+  sessionIdParamSchema,
 } from "../validators/admin.schema.js";
 import {
   getAdminOverview,
@@ -18,6 +21,12 @@ import {
   getUserSessionAttempts,
   getUserSessionReport,
   setUserStatus,
+  getUserChildDetail,
+  getUserChildQuestSessions,
+  getUserChildQuestSessionDetail,
+  getUserChildSessionAttempts,
+  getUserChildSessionReport,
+  getAdminQuestSessionDetail,
 } from "../services/admin.service.js";
 import { sendSuccess } from "../utils/apiResponse.js";
 import { UnauthorizedError } from "../utils/errors.js";
@@ -110,4 +119,84 @@ export async function updateUserStatusController(req: Request, res: Response) {
 
   const updatedUser = await setUserStatus(adminId, id, body);
   sendSuccess(res, 200, updatedUser, "User status updated successfully");
+}
+
+
+export async function getUserChildDetailController(
+  req: Request,
+  res: Response
+) {
+  const { userId, childProfileId } = userChildParamsSchema.parse(req.params);
+  const detail = await getUserChildDetail(userId, childProfileId);
+  sendSuccess(res, 200, detail, "Child profile detail retrieved");
+}
+
+export async function getUserChildQuestSessionsController(
+  req: Request,
+  res: Response
+) {
+  const { userId, childProfileId } = userChildParamsSchema.parse(req.params);
+  const query = listQuestSessionsQuerySchema.parse(req.query);
+  const result = await getUserChildQuestSessions(userId, childProfileId, query);
+  sendSuccess(res, 200, result.sessions, undefined, result.meta);
+}
+
+export async function getUserChildQuestSessionDetailController(
+  req: Request,
+  res: Response
+) {
+  const { userId, childProfileId, sessionId } =
+    userChildSessionParamsSchema.parse(req.params);
+  const detail = await getUserChildQuestSessionDetail(
+    userId,
+    childProfileId,
+    sessionId
+  );
+  sendSuccess(res, 200, detail, "Child quest session detail retrieved");
+}
+
+export async function getUserChildSessionAttemptsController(
+  req: Request,
+  res: Response
+) {
+  const { userId, childProfileId, sessionId } =
+    userChildSessionParamsSchema.parse(req.params);
+  const query = listLevelAttemptsQuerySchema.parse(req.query);
+  const result = await getUserChildSessionAttempts(
+    userId,
+    childProfileId,
+    sessionId,
+    query
+  );
+  sendSuccess(res, 200, result.attempts, undefined, result.meta);
+}
+
+export async function getUserChildSessionReportController(
+  req: Request,
+  res: Response
+) {
+  const { userId, childProfileId, sessionId } =
+    userChildSessionParamsSchema.parse(req.params);
+  const result = await getUserChildSessionReport(
+    userId,
+    childProfileId,
+    sessionId
+  );
+  sendSuccess(
+    res,
+    200,
+    result,
+    result.hasReport
+      ? "Assessment report retrieved"
+      : result.message
+  );
+}
+
+export async function getAdminQuestSessionDetailController(
+  req: Request,
+  res: Response
+) {
+  const { sessionId } = sessionIdParamSchema.parse(req.params);
+  const detail = await getAdminQuestSessionDetail(sessionId);
+  sendSuccess(res, 200, detail, "Quest session details retrieved");
 }
