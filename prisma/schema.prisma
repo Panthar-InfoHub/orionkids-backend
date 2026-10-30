@@ -147,6 +147,8 @@ model QuestSession {
   @@index([userId, startedAt])
   @@index([childProfileId])
   @@index([childProfileId, status])
+  @@index([userId, lastActivityAt])
+  @@index([childProfileId, startedAt])
   @@map("quest_session")
 }
 
@@ -185,6 +187,8 @@ model LevelAttempt {
 
   @@index([questSessionId, gameKey, levelNumber])
   @@index([userId])
+  @@index([questSessionId, status])
+  @@index([questSessionId, startedAt])
   @@map("level_attempt")
 }
 

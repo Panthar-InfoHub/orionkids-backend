@@ -426,10 +426,17 @@ export async function startLevelAttempt(
 ) {
   const session = await prisma.questSession.findUnique({
     where: { id: sessionId },
-    include: {
-      warmUpSubmission: true,
+    select: {
+      id: true,
+      userId: true,
+      status: true,
+      currentGame: true,
+      currentLevel: true,
+      currentStage: true,
+      warmUpSubmission: { select: { id: true } },
       levelAttempts: {
         where: { status: "COMPLETED" },
+        select: { gameKey: true, levelNumber: true },
       },
     },
   });
@@ -557,10 +564,17 @@ export async function completeLevelAttempt(
     async (tx) => {
       const currentSession = await tx.questSession.findUnique({
         where: { id: sessionId },
-        include: {
-          warmUpSubmission: true,
+        select: {
+          id: true,
+          userId: true,
+          status: true,
+          currentStage: true,
+          currentGame: true,
+          currentLevel: true,
+          warmUpSubmission: { select: { id: true } },
           levelAttempts: {
             where: { status: "COMPLETED" },
+            select: { id: true, gameKey: true, levelNumber: true },
           },
         },
       });
@@ -837,14 +851,58 @@ export async function completeLevelAttempt(
 }
 
 export async function generateOrGetReport(userId: string, sessionId: string) {
+  // Fast path: if report is already stored, return it immediately without fetching attempt records
+  const existingReport = await prisma.questReport.findUnique({
+    where: { questSessionId: sessionId },
+  });
+
+  if (existingReport) {
+    if (existingReport.userId !== userId) {
+      throw new ForbiddenError("You do not own this quest session");
+    }
+    return existingReport;
+  }
+
+  // Slow path: generate report for the first time with scoped relation fields
   const session = await prisma.questSession.findUnique({
     where: { id: sessionId },
-    include: {
-      questReport: true,
-      warmUpSubmission: true,
+    select: {
+      id: true,
+      userId: true,
+      status: true,
+      currentGame: true,
+      currentLevel: true,
+      childProfileId: true,
+      childProfile: {
+        select: {
+          id: true,
+          childName: true,
+          age: true,
+          selectedClass: true,
+          school: true,
+        },
+      },
+      warmUpSubmission: {
+        select: { answers: true },
+      },
       levelAttempts: {
         where: { status: "COMPLETED" },
         orderBy: [{ gameId: "asc" }, { levelNumber: "asc" }, { attemptNumber: "desc" }],
+        select: {
+          id: true,
+          gameId: true,
+          gameKey: true,
+          levelNumber: true,
+          attemptNumber: true,
+          status: true,
+          totalTrials: true,
+          correctTrials: true,
+          accuracy: true,
+          durationMs: true,
+          averageReactionTimeMs: true,
+          metrics: true,
+          completedAt: true,
+        },
       },
     },
   });
@@ -863,20 +921,18 @@ export async function generateOrGetReport(userId: string, sessionId: string) {
     );
   }
 
-  if (session.questReport) {
-    return session.questReport;
-  }
-
-  let childProfile: any = null;
-  if (session.childProfileId) {
-    childProfile = await prisma.childProfile.findUnique({
-      where: { id: session.childProfileId },
-    });
-  }
+  let childProfile = session.childProfile;
   if (!childProfile) {
     childProfile = await prisma.childProfile.findFirst({
       where: { userId },
       orderBy: { createdAt: "asc" },
+      select: {
+        id: true,
+        childName: true,
+        age: true,
+        selectedClass: true,
+        school: true,
+      },
     });
   }
 
@@ -1098,11 +1154,27 @@ export async function getResumeState(userId: string, childProfileId?: string) {
   // Query only the authenticated user's IN_PROGRESS quest sessions (never trust client userId)
   const activeSessions = await prisma.questSession.findMany({
     where,
-    include: {
-      childProfile: true,
-      warmUpSubmission: true,
+    select: {
+      id: true,
+      userId: true,
+      childProfileId: true,
+      status: true,
+      currentStage: true,
+      currentGame: true,
+      currentLevel: true,
+      startedAt: true,
+      warmUpSubmission: {
+        select: { id: true },
+      },
       levelAttempts: {
         orderBy: { attemptNumber: "desc" },
+        select: {
+          id: true,
+          gameKey: true,
+          levelNumber: true,
+          status: true,
+          metrics: true,
+        },
       },
     },
     orderBy: { startedAt: "desc" },

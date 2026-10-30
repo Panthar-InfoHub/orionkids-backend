@@ -20,37 +20,34 @@ export const CANONICAL_GAMES = [
 
 /**
  * High-level administrative overview and aggregate system metrics.
+ * Uses consolidated group-by aggregations to minimize round-trips.
  */
 export async function getAdminOverview() {
   const [
-    totalUsers,
-    pendingUsers,
-    activeUsers,
-    restrictedUsers,
+    userStatusGroups,
     adminUsers,
+    pendingSubmittedUsers,
     totalChildren,
-    totalSessions,
-    completedSessions,
-    inProgressSessions,
-    abandonedSessions,
+    sessionStatusGroups,
     recentCompletions,
     recentUsers,
   ] = await Promise.all([
-    prisma.user.count(),
+    prisma.user.groupBy({
+      by: ["status"],
+      _count: { _all: true },
+    }),
+    prisma.user.count({ where: { role: "ADMIN" } }),
     prisma.user.count({
       where: {
         status: "PENDING",
         onboardingSubmittedAt: { not: null },
       },
     }),
-    prisma.user.count({ where: { status: "ACTIVE" } }),
-    prisma.user.count({ where: { status: "RESTRICTED" } }),
-    prisma.user.count({ where: { role: "ADMIN" } }),
     prisma.childProfile.count(),
-    prisma.questSession.count(),
-    prisma.questSession.count({ where: { status: "COMPLETED" } }),
-    prisma.questSession.count({ where: { status: "IN_PROGRESS" } }),
-    prisma.questSession.count({ where: { status: "ABANDONED" } }),
+    prisma.questSession.groupBy({
+      by: ["status"],
+      _count: { _all: true },
+    }),
     prisma.questSession.findMany({
       where: { status: "COMPLETED" },
       take: 6,
@@ -89,10 +86,30 @@ export async function getAdminOverview() {
     }),
   ]);
 
+  let totalUsers = 0;
+  let activeUsers = 0;
+  let restrictedUsers = 0;
+  for (const g of userStatusGroups) {
+    totalUsers += g._count._all;
+    if (g.status === "ACTIVE") activeUsers = g._count._all;
+    if (g.status === "RESTRICTED") restrictedUsers = g._count._all;
+  }
+
+  let totalSessions = 0;
+  let completedSessions = 0;
+  let inProgressSessions = 0;
+  let abandonedSessions = 0;
+  for (const g of sessionStatusGroups) {
+    totalSessions += g._count._all;
+    if (g.status === "COMPLETED") completedSessions = g._count._all;
+    if (g.status === "IN_PROGRESS") inProgressSessions = g._count._all;
+    if (g.status === "ABANDONED") abandonedSessions = g._count._all;
+  }
+
   return {
     accounts: {
       total: totalUsers,
-      pending: pendingUsers,
+      pending: pendingSubmittedUsers,
       active: activeUsers,
       restricted: restrictedUsers,
       admins: adminUsers,
@@ -214,68 +231,52 @@ export async function listUsers(query: ListUsersQuery) {
 
 /**
  * Retrieve comprehensive 360° overview of a single user.
+ * Executes 2 concurrent queries instead of 6 sequential round-trips.
  */
 export async function getUserDetail(userId: string) {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: {
-      id: true,
-      name: true,
-      email: true,
-      image: true,
-      role: true,
-      status: true,
-      restrictedReason: true,
-      reviewedAt: true,
-      reviewedById: true,
-      onboardingSubmittedAt: true,
-      createdAt: true,
-      updatedAt: true,
-      childProfiles: {
-        select: {
-          id: true,
-          childName: true,
-          age: true,
-          language: true,
-          school: true,
-          selectedClass: true,
-          studentId: true,
-          parentEmail: true,
-          parentMobile: true,
-          isGuardian: true,
-          createdAt: true,
-          updatedAt: true,
+  const [user, allUserSessions] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        image: true,
+        role: true,
+        status: true,
+        restrictedReason: true,
+        reviewedAt: true,
+        reviewedById: true,
+        onboardingSubmittedAt: true,
+        createdAt: true,
+        updatedAt: true,
+        childProfiles: {
+          select: {
+            id: true,
+            childName: true,
+            age: true,
+            language: true,
+            school: true,
+            selectedClass: true,
+            studentId: true,
+            parentEmail: true,
+            parentMobile: true,
+            isGuardian: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+          orderBy: { createdAt: "asc" },
         },
-        orderBy: { createdAt: "asc" },
-      },
-      accounts: {
-        select: {
-          id: true,
-          providerId: true,
-          createdAt: true,
+        accounts: {
+          select: {
+            id: true,
+            providerId: true,
+            createdAt: true,
+          },
         },
       },
-    },
-  });
-
-  if (!user) {
-    throw new NotFoundError("User not found");
-  }
-
-  // Authoritative quest statistics aggregated from actual database records
-  const [
-    totalSessions,
-    completedSessions,
-    inProgressSessions,
-    abandonedSessions,
-    latestSession,
-    allUserSessions,
-  ] = await Promise.all([
-    prisma.questSession.count({ where: { userId } }),
-    prisma.questSession.count({ where: { userId, status: "COMPLETED" } }),
-    prisma.questSession.count({ where: { userId, status: "IN_PROGRESS" } }),
-    prisma.questSession.count({ where: { userId, status: "ABANDONED" } }),
-    prisma.questSession.findFirst({
+    }),
+    prisma.questSession.findMany({
       where: { userId },
       orderBy: { lastActivityAt: "desc" },
       select: {
@@ -287,11 +288,6 @@ export async function getUserDetail(userId: string) {
         startedAt: true,
         lastActivityAt: true,
         completedAt: true,
-      },
-    }),
-    prisma.questSession.findMany({
-      where: { userId },
-      include: {
         levelAttempts: {
           where: { status: "COMPLETED" },
           select: { gameKey: true, levelNumber: true },
@@ -300,12 +296,38 @@ export async function getUserDetail(userId: string) {
     }),
   ]);
 
-  // Sum actual completed levels without double counting
+  if (!user) {
+    throw new NotFoundError("User not found");
+  }
+
+  const totalSessions = allUserSessions.length;
+  let completedSessions = 0;
+  let inProgressSessions = 0;
+  let abandonedSessions = 0;
   let totalCompletedLevels = 0;
+
   for (const s of allUserSessions) {
+    if (s.status === "COMPLETED") completedSessions += 1;
+    else if (s.status === "IN_PROGRESS") inProgressSessions += 1;
+    else if (s.status === "ABANDONED") abandonedSessions += 1;
+
     const prog = computeSessionProgression(s, s.levelAttempts);
     totalCompletedLevels += prog.highestCompletedIndex;
   }
+
+  const firstSession = allUserSessions[0];
+  const latestSession = firstSession
+    ? {
+        id: firstSession.id,
+        status: firstSession.status,
+        currentStage: firstSession.currentStage,
+        currentGame: firstSession.currentGame,
+        currentLevel: firstSession.currentLevel,
+        startedAt: firstSession.startedAt,
+        lastActivityAt: firstSession.lastActivityAt,
+        completedAt: firstSession.completedAt,
+      }
+    : null;
 
   return {
     user: {
@@ -344,32 +366,43 @@ export async function getUserDetail(userId: string) {
 
 /**
  * Retrieve child profile(s) scoped to a parent account with comprehensive quest analytics.
+ * Parallelizes user validation and child listing with scoped relation loading.
  */
 export async function getUserChildren(userId: string) {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { id: true },
-  });
-  if (!user) {
-    throw new NotFoundError("User not found");
-  }
-
-  const children = await prisma.childProfile.findMany({
-    where: { userId },
-    orderBy: { createdAt: "asc" },
-    include: {
-      questSessions: {
-        orderBy: { startedAt: "desc" },
-        include: {
-          questReport: { select: { id: true } },
-          levelAttempts: {
-            where: { status: "COMPLETED" },
-            select: { gameKey: true, levelNumber: true },
+  const [user, children] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true },
+    }),
+    prisma.childProfile.findMany({
+      where: { userId },
+      orderBy: { createdAt: "asc" },
+      include: {
+        questSessions: {
+          orderBy: { startedAt: "desc" },
+          select: {
+            id: true,
+            status: true,
+            currentStage: true,
+            currentGame: true,
+            currentLevel: true,
+            startedAt: true,
+            lastActivityAt: true,
+            completedAt: true,
+            questReport: { select: { id: true } },
+            levelAttempts: {
+              where: { status: "COMPLETED" },
+              select: { gameKey: true, levelNumber: true },
+            },
           },
         },
       },
-    },
-  });
+    }),
+  ]);
+
+  if (!user) {
+    throw new NotFoundError("User not found");
+  }
 
   return children.map((c) => {
     const sessions = c.questSessions || [];
@@ -432,14 +465,6 @@ export async function getUserQuestSessions(
   userId: string,
   query: ListQuestSessionsQuery
 ) {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { id: true },
-  });
-  if (!user) {
-    throw new NotFoundError("User not found");
-  }
-
   const where: any = { userId };
   if (query.status) {
     where.status = query.status;
@@ -448,51 +473,61 @@ export async function getUserQuestSessions(
   const skip = (query.page - 1) * query.limit;
   const take = query.limit;
 
-  const [sessions, total] = await Promise.all([
-    prisma.questSession.findMany({
-      where,
-      skip,
-      take,
-      orderBy: { startedAt: "desc" },
-      include: {
-        childProfile: {
-          select: {
-            id: true,
-            childName: true,
-            selectedClass: true,
-          },
-        },
-        warmUpSubmission: {
-          select: {
-            id: true,
-            completedAt: true,
-          },
-        },
-        questReport: {
-          select: {
-            id: true,
-            generatedAt: true,
-            overallAccuracy: true,
-            totalDurationMs: true,
-          },
-        },
-        levelAttempts: {
-          where: { status: "COMPLETED" },
-          select: {
-            gameKey: true,
-            levelNumber: true,
-            status: true,
-          },
-        },
-        _count: {
-          select: {
-            levelAttempts: true,
-          },
-        },
-      },
+  const [user, [sessions, total]] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true },
     }),
-    prisma.questSession.count({ where }),
+    Promise.all([
+      prisma.questSession.findMany({
+        where,
+        skip,
+        take,
+        orderBy: { startedAt: "desc" },
+        include: {
+          childProfile: {
+            select: {
+              id: true,
+              childName: true,
+              selectedClass: true,
+            },
+          },
+          warmUpSubmission: {
+            select: {
+              id: true,
+              completedAt: true,
+            },
+          },
+          questReport: {
+            select: {
+              id: true,
+              generatedAt: true,
+              overallAccuracy: true,
+              totalDurationMs: true,
+            },
+          },
+          levelAttempts: {
+            where: { status: "COMPLETED" },
+            select: {
+              gameKey: true,
+              levelNumber: true,
+              status: true,
+            },
+          },
+          _count: {
+            select: {
+              levelAttempts: true,
+            },
+          },
+        },
+      }),
+      prisma.questSession.count({ where }),
+    ]),
   ]);
+
+  if (!user) {
+    throw new NotFoundError("User not found");
+  }
 
   const formattedSessions = sessions.map((s) => {
     const prog = computeSessionProgression(s, s.levelAttempts);
@@ -538,6 +573,7 @@ export async function getUserQuestSessions(
 
 /**
  * Retrieve comprehensive progression matrix, checkpoints, and attempt history for a specific quest session.
+ * Excludes large raw trialRecords and metrics arrays from this summary inspection endpoint.
  */
 export async function getUserQuestSessionDetail(
   userId: string,
@@ -558,6 +594,17 @@ export async function getUserQuestSessionDetail(
       questReport: true,
       levelAttempts: {
         orderBy: [{ startedAt: "asc" }, { attemptNumber: "asc" }],
+        select: {
+          id: true,
+          gameKey: true,
+          levelNumber: true,
+          attemptNumber: true,
+          status: true,
+          accuracy: true,
+          durationMs: true,
+          completedAt: true,
+          startedAt: true,
+        },
       },
     },
   });
@@ -711,28 +758,13 @@ export async function getUserQuestSessionDetail(
 
 /**
  * Retrieve level attempts and raw gameplay telemetry for a quest session.
+ * Parallelizes ownership verification and paginated attempt queries.
  */
 export async function getUserSessionAttempts(
   userId: string,
   sessionId: string,
   query: ListLevelAttemptsQuery
 ) {
-  const session = await prisma.questSession.findUnique({
-    where: { id: sessionId },
-    select: { id: true, userId: true },
-  });
-
-  if (!session) {
-    throw new NotFoundError("Quest session not found");
-  }
-
-  if (session.userId !== userId) {
-    throw new ForbiddenError(
-      "Quest session does not belong to the specified user",
-      "FORBIDDEN"
-    );
-  }
-
   const where: any = { questSessionId: sessionId };
   if (query.gameKey) {
     where.gameKey = query.gameKey;
@@ -747,33 +779,50 @@ export async function getUserSessionAttempts(
   const skip = (query.page - 1) * query.limit;
   const take = query.limit;
 
-  const [attempts, total] = await Promise.all([
-    prisma.levelAttempt.findMany({
-      where,
-      skip,
-      take,
-      orderBy: [{ startedAt: "asc" }, { attemptNumber: "asc" }],
-      select: {
-        id: true,
-        questSessionId: true,
-        gameId: true,
-        gameKey: true,
-        levelNumber: true,
-        attemptNumber: true,
-        status: true,
-        totalTrials: true,
-        correctTrials: true,
-        accuracy: true,
-        durationMs: true,
-        averageReactionTimeMs: true,
-        metrics: true,
-        trialRecords: true,
-        startedAt: true,
-        completedAt: true,
-      },
+  const [session, [attempts, total]] = await Promise.all([
+    prisma.questSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, userId: true },
     }),
-    prisma.levelAttempt.count({ where }),
+    Promise.all([
+      prisma.levelAttempt.findMany({
+        where,
+        skip,
+        take,
+        orderBy: [{ startedAt: "asc" }, { attemptNumber: "asc" }],
+        select: {
+          id: true,
+          questSessionId: true,
+          gameId: true,
+          gameKey: true,
+          levelNumber: true,
+          attemptNumber: true,
+          status: true,
+          totalTrials: true,
+          correctTrials: true,
+          accuracy: true,
+          durationMs: true,
+          averageReactionTimeMs: true,
+          metrics: true,
+          trialRecords: true,
+          startedAt: true,
+          completedAt: true,
+        },
+      }),
+      prisma.levelAttempt.count({ where }),
+    ]),
   ]);
+
+  if (!session) {
+    throw new NotFoundError("Quest session not found");
+  }
+
+  if (session.userId !== userId) {
+    throw new ForbiddenError(
+      "Quest session does not belong to the specified user",
+      "FORBIDDEN"
+    );
+  }
 
   return {
     attempts,
@@ -796,7 +845,12 @@ export async function getUserSessionReport(
 ) {
   const session = await prisma.questSession.findUnique({
     where: { id: sessionId },
-    include: {
+    select: {
+      id: true,
+      userId: true,
+      status: true,
+      currentGame: true,
+      currentLevel: true,
       questReport: true,
     },
   });
@@ -893,7 +947,6 @@ export async function setUserStatus(
   return updatedUser;
 }
 
-
 /**
  * Retrieve comprehensive details for a single child profile scoped to a parent.
  */
@@ -910,7 +963,15 @@ export async function getUserChildDetail(userId: string, childProfileId: string)
       },
       questSessions: {
         orderBy: { startedAt: "desc" },
-        include: {
+        select: {
+          id: true,
+          status: true,
+          currentStage: true,
+          currentGame: true,
+          currentLevel: true,
+          startedAt: true,
+          lastActivityAt: true,
+          completedAt: true,
           questReport: { select: { id: true } },
           levelAttempts: {
             where: { status: "COMPLETED" },
@@ -983,28 +1044,13 @@ export async function getUserChildDetail(userId: string, childProfileId: string)
 
 /**
  * Retrieve quest sessions strictly filtered by child profile ID and scoped to the parent.
+ * Parallelizes ownership checks and paginated session listing.
  */
 export async function getUserChildQuestSessions(
   userId: string,
   childProfileId: string,
   query: ListQuestSessionsQuery
 ) {
-  const child = await prisma.childProfile.findUnique({
-    where: { id: childProfileId },
-    select: { id: true, userId: true },
-  });
-
-  if (!child) {
-    throw new NotFoundError("Child profile not found");
-  }
-
-  if (child.userId !== userId) {
-    throw new ForbiddenError(
-      "Child profile does not belong to the specified user",
-      "FORBIDDEN"
-    );
-  }
-
   const where: any = {
     userId,
     childProfileId,
@@ -1017,45 +1063,62 @@ export async function getUserChildQuestSessions(
   const skip = (query.page - 1) * query.limit;
   const take = query.limit;
 
-  const [sessions, total] = await Promise.all([
-    prisma.questSession.findMany({
-      where,
-      skip,
-      take,
-      orderBy: { startedAt: "desc" },
-      include: {
-        childProfile: {
-          select: {
-            id: true,
-            childName: true,
-            selectedClass: true,
-          },
-        },
-        warmUpSubmission: {
-          select: {
-            id: true,
-            completedAt: true,
-          },
-        },
-        questReport: {
-          select: {
-            id: true,
-            generatedAt: true,
-            overallAccuracy: true,
-            totalDurationMs: true,
-          },
-        },
-        levelAttempts: {
-          where: { status: "COMPLETED" },
-          select: { gameKey: true, levelNumber: true },
-        },
-        _count: {
-          select: { levelAttempts: true },
-        },
-      },
+  const [child, [sessions, total]] = await Promise.all([
+    prisma.childProfile.findUnique({
+      where: { id: childProfileId },
+      select: { id: true, userId: true },
     }),
-    prisma.questSession.count({ where }),
+    Promise.all([
+      prisma.questSession.findMany({
+        where,
+        skip,
+        take,
+        orderBy: { startedAt: "desc" },
+        include: {
+          childProfile: {
+            select: {
+              id: true,
+              childName: true,
+              selectedClass: true,
+            },
+          },
+          warmUpSubmission: {
+            select: {
+              id: true,
+              completedAt: true,
+            },
+          },
+          questReport: {
+            select: {
+              id: true,
+              generatedAt: true,
+              overallAccuracy: true,
+              totalDurationMs: true,
+            },
+          },
+          levelAttempts: {
+            where: { status: "COMPLETED" },
+            select: { gameKey: true, levelNumber: true },
+          },
+          _count: {
+            select: { levelAttempts: true },
+          },
+        },
+      }),
+      prisma.questSession.count({ where }),
+    ]),
   ]);
+
+  if (!child) {
+    throw new NotFoundError("Child profile not found");
+  }
+
+  if (child.userId !== userId) {
+    throw new ForbiddenError(
+      "Child profile does not belong to the specified user",
+      "FORBIDDEN"
+    );
+  }
 
   const formattedSessions = sessions.map((s) => {
     const prog = computeSessionProgression(s, s.levelAttempts);
@@ -1139,6 +1202,7 @@ export async function getUserChildQuestSessionDetail(
 
 /**
  * Retrieve level attempts for a quest session strictly verifying ownership of child and user.
+ * Runs ownership checks in parallel.
  */
 export async function getUserChildSessionAttempts(
   userId: string,
@@ -1146,10 +1210,16 @@ export async function getUserChildSessionAttempts(
   sessionId: string,
   query: ListLevelAttemptsQuery
 ) {
-  const child = await prisma.childProfile.findUnique({
-    where: { id: childProfileId },
-    select: { id: true, userId: true },
-  });
+  const [child, session] = await Promise.all([
+    prisma.childProfile.findUnique({
+      where: { id: childProfileId },
+      select: { id: true, userId: true },
+    }),
+    prisma.questSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, userId: true, childProfileId: true },
+    }),
+  ]);
 
   if (!child) {
     throw new NotFoundError("Child profile not found");
@@ -1161,11 +1231,6 @@ export async function getUserChildSessionAttempts(
       "FORBIDDEN"
     );
   }
-
-  const session = await prisma.questSession.findUnique({
-    where: { id: sessionId },
-    select: { id: true, userId: true, childProfileId: true },
-  });
 
   if (!session) {
     throw new NotFoundError("Quest session not found");
@@ -1190,16 +1255,23 @@ export async function getUserChildSessionAttempts(
 
 /**
  * Retrieve assessment report for a quest session strictly verifying ownership of child and user.
+ * Runs ownership checks in parallel.
  */
 export async function getUserChildSessionReport(
   userId: string,
   childProfileId: string,
   sessionId: string
 ) {
-  const child = await prisma.childProfile.findUnique({
-    where: { id: childProfileId },
-    select: { id: true, userId: true },
-  });
+  const [child, session] = await Promise.all([
+    prisma.childProfile.findUnique({
+      where: { id: childProfileId },
+      select: { id: true, userId: true },
+    }),
+    prisma.questSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, userId: true, childProfileId: true },
+    }),
+  ]);
 
   if (!child) {
     throw new NotFoundError("Child profile not found");
@@ -1211,11 +1283,6 @@ export async function getUserChildSessionReport(
       "FORBIDDEN"
     );
   }
-
-  const session = await prisma.questSession.findUnique({
-    where: { id: sessionId },
-    select: { id: true, userId: true, childProfileId: true },
-  });
 
   if (!session) {
     throw new NotFoundError("Quest session not found");

@@ -99,7 +99,13 @@ export async function listChildren(userId: string) {
     include: {
       questSessions: {
         orderBy: { startedAt: "desc" },
-        include: {
+        select: {
+          id: true,
+          status: true,
+          currentStage: true,
+          currentGame: true,
+          currentLevel: true,
+          lastActivityAt: true,
           questReport: {
             select: { id: true, generatedAt: true },
           },
@@ -182,7 +188,13 @@ export async function getChildProfile(userId: string, childId: string) {
     include: {
       questSessions: {
         orderBy: { startedAt: "desc" },
-        include: {
+        select: {
+          id: true,
+          status: true,
+          currentStage: true,
+          currentGame: true,
+          currentLevel: true,
+          lastActivityAt: true,
           questReport: { select: { id: true, generatedAt: true } },
           levelAttempts: {
             where: { status: "COMPLETED" },
@@ -273,6 +285,7 @@ export async function updateChildProfile(
 ) {
   const child = await prisma.childProfile.findUnique({
     where: { id: childId },
+    select: { id: true, userId: true },
   });
 
   if (!child) {
@@ -303,9 +316,46 @@ export async function updateChildProfile(
 }
 
 export async function getChildProgress(userId: string, childId: string) {
-  const child = await prisma.childProfile.findUnique({
-    where: { id: childId },
-  });
+  // Parallelize child profile ownership check with in-progress quest session lookup
+  const [child, inProgressSession] = await Promise.all([
+    prisma.childProfile.findUnique({
+      where: { id: childId },
+      select: {
+        id: true,
+        userId: true,
+        childName: true,
+        age: true,
+        selectedClass: true,
+        school: true,
+      },
+    }),
+    prisma.questSession.findFirst({
+      where: { childProfileId: childId, status: "IN_PROGRESS" },
+      include: {
+        warmUpSubmission: {
+          select: { id: true, completedAt: true },
+        },
+        levelAttempts: {
+          where: { status: "COMPLETED" },
+          orderBy: [{ gameId: "asc" }, { levelNumber: "asc" }, { attemptNumber: "desc" }],
+          select: {
+            id: true,
+            gameId: true,
+            gameKey: true,
+            levelNumber: true,
+            accuracy: true,
+            durationMs: true,
+            averageReactionTimeMs: true,
+            completedAt: true,
+          },
+        },
+        questReport: {
+          select: { id: true },
+        },
+      },
+      orderBy: { startedAt: "desc" },
+    }),
+  ]);
 
   if (!child) {
     throw new NotFoundError("Child profile not found");
@@ -318,30 +368,32 @@ export async function getChildProgress(userId: string, childId: string) {
     );
   }
 
-  // Find active in-progress session first, or latest completed session
-  let session = await prisma.questSession.findFirst({
-    where: { childProfileId: childId, status: "IN_PROGRESS" },
-    include: {
-      warmUpSubmission: true,
-      levelAttempts: {
-        where: { status: "COMPLETED" },
-        orderBy: [{ gameId: "asc" }, { levelNumber: "asc" }, { attemptNumber: "desc" }],
-      },
-      questReport: true,
-    },
-    orderBy: { startedAt: "desc" },
-  });
+  let session = inProgressSession;
 
   if (!session) {
     session = await prisma.questSession.findFirst({
       where: { childProfileId: childId, status: "COMPLETED" },
       include: {
-        warmUpSubmission: true,
+        warmUpSubmission: {
+          select: { id: true, completedAt: true },
+        },
         levelAttempts: {
           where: { status: "COMPLETED" },
           orderBy: [{ gameId: "asc" }, { levelNumber: "asc" }, { attemptNumber: "desc" }],
+          select: {
+            id: true,
+            gameId: true,
+            gameKey: true,
+            levelNumber: true,
+            accuracy: true,
+            durationMs: true,
+            averageReactionTimeMs: true,
+            completedAt: true,
+          },
         },
-        questReport: true,
+        questReport: {
+          select: { id: true },
+        },
       },
       orderBy: { completedAt: "desc" },
     });
@@ -454,9 +506,39 @@ export async function getChildProgress(userId: string, childId: string) {
 }
 
 export async function getChildQuestSessions(userId: string, childId: string) {
-  const child = await prisma.childProfile.findUnique({
-    where: { id: childId },
-  });
+  const [child, sessions] = await Promise.all([
+    prisma.childProfile.findUnique({
+      where: { id: childId },
+      select: { id: true, userId: true },
+    }),
+    prisma.questSession.findMany({
+      where: { childProfileId: childId, userId },
+      orderBy: { startedAt: "desc" },
+      include: {
+        warmUpSubmission: {
+          select: { id: true, completedAt: true },
+        },
+        questReport: {
+          select: {
+            id: true,
+            overallAccuracy: true,
+            totalDurationMs: true,
+            generatedAt: true,
+          },
+        },
+        levelAttempts: {
+          where: { status: "COMPLETED" },
+          select: {
+            id: true,
+            gameKey: true,
+            levelNumber: true,
+            accuracy: true,
+            durationMs: true,
+          },
+        },
+      },
+    }),
+  ]);
 
   if (!child) {
     throw new NotFoundError("Child profile not found");
@@ -468,34 +550,6 @@ export async function getChildQuestSessions(userId: string, childId: string) {
       "ACCESS_DENIED"
     );
   }
-
-  const sessions = await prisma.questSession.findMany({
-    where: { childProfileId: childId, userId },
-    orderBy: { startedAt: "desc" },
-    include: {
-      warmUpSubmission: {
-        select: { id: true, completedAt: true },
-      },
-      questReport: {
-        select: {
-          id: true,
-          overallAccuracy: true,
-          totalDurationMs: true,
-          generatedAt: true,
-        },
-      },
-      levelAttempts: {
-        where: { status: "COMPLETED" },
-        select: {
-          id: true,
-          gameKey: true,
-          levelNumber: true,
-          accuracy: true,
-          durationMs: true,
-        },
-      },
-    },
-  });
 
   return sessions.map((s) => {
     const prog = computeSessionProgression(s, s.levelAttempts);
@@ -518,9 +572,38 @@ export async function getChildQuestSessions(userId: string, childId: string) {
 }
 
 export async function getChildReports(userId: string, childId: string) {
-  const child = await prisma.childProfile.findUnique({
-    where: { id: childId },
-  });
+  const [child, reports] = await Promise.all([
+    prisma.childProfile.findUnique({
+      where: { id: childId },
+      select: { id: true, userId: true },
+    }),
+    prisma.questReport.findMany({
+      where: {
+        userId,
+        OR: [
+          { childProfileId: childId },
+          { questSession: { childProfileId: childId } },
+        ],
+      },
+      orderBy: { generatedAt: "desc" },
+      select: {
+        id: true,
+        questSessionId: true,
+        childProfileId: true,
+        childName: true,
+        age: true,
+        selectedClass: true,
+        school: true,
+        overallAccuracy: true,
+        totalDurationMs: true,
+        gameSummaries: true,
+        cognitiveFacets: true,
+        growthObservations: true,
+        schemaVersion: true,
+        generatedAt: true,
+      },
+    }),
+  ]);
 
   if (!child) {
     throw new NotFoundError("Child profile not found");
@@ -532,18 +615,6 @@ export async function getChildReports(userId: string, childId: string) {
       "ACCESS_DENIED"
     );
   }
-
-  // Find reports linked directly or via quest session
-  const reports = await prisma.questReport.findMany({
-    where: {
-      userId,
-      OR: [
-        { childProfileId: childId },
-        { questSession: { childProfileId: childId } },
-      ],
-    },
-    orderBy: { generatedAt: "desc" },
-  });
 
   return reports.map((r) => ({
     id: r.id,
