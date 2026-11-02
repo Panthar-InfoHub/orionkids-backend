@@ -1,3 +1,13 @@
+import {
+  listAccessRequestsQuerySchema,
+  requestIdParamSchema,
+  rejectAccessRequestBodySchema,
+} from "../validators/registration.schema.js";
+import {
+  listAccessRequests,
+  approveAccessRequest,
+  rejectAccessRequest,
+} from "../services/admin.service.js";
 import type { Request, Response } from "express";
 import {
   listUsersQuerySchema,
@@ -199,4 +209,36 @@ export async function getAdminQuestSessionDetailController(
   const { sessionId } = sessionIdParamSchema.parse(req.params);
   const detail = await getAdminQuestSessionDetail(sessionId);
   sendSuccess(res, 200, detail, "Quest session details retrieved");
+}
+
+export async function listAccessRequestsController(
+  req: Request,
+  res: Response
+) {
+  const query = listAccessRequestsQuerySchema.parse(req.query);
+  const result = await listAccessRequests(query);
+  sendSuccess(res, 200, result.requests, "Access requests retrieved", result.meta);
+}
+
+export async function approveAccessRequestController(
+  req: Request,
+  res: Response
+) {
+  const adminId = getAdminUserId(req);
+  const { requestId } = requestIdParamSchema.parse(req.params);
+
+  const result = await approveAccessRequest(adminId, requestId);
+  sendSuccess(res, 200, result, "Access request approved successfully");
+}
+
+export async function rejectAccessRequestController(
+  req: Request,
+  res: Response
+) {
+  const adminId = getAdminUserId(req);
+  const { requestId } = requestIdParamSchema.parse(req.params);
+  const body = rejectAccessRequestBodySchema.parse(req.body);
+
+  const result = await rejectAccessRequest(adminId, requestId, body.reason);
+  sendSuccess(res, 200, result, "Access request rejected successfully");
 }

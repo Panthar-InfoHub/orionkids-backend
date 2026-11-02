@@ -25,7 +25,9 @@
     "db:inspect": "tsx scripts/inspect-db.ts",
     "db:check-migrations": "tsx scripts/check-migrations.ts",
     "db:deploy-neon": "tsx scripts/deploy-neon-migration.ts",
-    "db:verify-schema": "tsx scripts/verify-schema.ts"
+    "db:verify-schema": "tsx scripts/verify-schema.ts",
+    "db:deploy-terms": "tsx scripts/deploy-terms-migration.ts",
+    "test:reg": "node --import tsx --test tests/registration.workflow.test.ts"
   },
   "keywords": [],
   "author": "",

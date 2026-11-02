@@ -4,10 +4,14 @@ import adminRoutes from "./admin.routes.js";
 import onboardingRoutes from "./onboarding.routes.js";
 import questRoutes from "./quest.routes.js";
 import childRoutes from "./child.routes.js";
+import registrationRoutes from "./registration.routes.js";
+import accessRequestRoutes from "./access-request.routes.js";
 
 const router = Router();
 
 router.use("/me", meRoutes);
+router.use("/registration", registrationRoutes);
+router.use("/access-requests", accessRequestRoutes);
 router.use("/admin", adminRoutes);
 router.use("/onboarding", onboardingRoutes);
 router.use("/children", childRoutes);

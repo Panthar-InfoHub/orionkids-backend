@@ -24,6 +24,12 @@ enum QuestSessionStatus {
   ABANDONED
 }
 
+enum AccessRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 enum LevelAttemptStatus {
   IN_PROGRESS
   COMPLETED
@@ -44,6 +50,13 @@ model User {
   reviewedAt            DateTime?
   reviewedById          String?
   onboardingSubmittedAt DateTime?
+  termsAccepted         Boolean           @default(false)
+  termsVersion          String?
+  termsAcceptedAt       DateTime?
+  privacyPolicyVersion  String?
+  privacyAcceptedAt     DateTime?
+  accessRequests        AccessRequest[]   @relation("UserAccessRequests")
+  termsAcceptances      TermsAcceptance[]
   childProfiles         ChildProfile[]
   sessions              Session[]
   accounts              Account[]
@@ -215,4 +228,37 @@ model QuestReport {
   @@index([userId])
   @@index([childProfileId])
   @@map("quest_report")
+}
+
+model AccessRequest {
+  id              String              @id @default(cuid())
+  userId          String
+  user            User                @relation("UserAccessRequests", fields: [userId], references: [id], onDelete: Cascade)
+  status          AccessRequestStatus @default(PENDING)
+  notes           String?
+  submittedAt     DateTime            @default(now())
+  reviewedAt      DateTime?
+  reviewedById    String?
+  rejectionReason String?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([userId, status])
+  @@index([status, submittedAt])
+  @@map("access_request")
+}
+
+model TermsAcceptance {
+  id                   String    @id @default(cuid())
+  userId               String
+  user                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  termsVersion         String
+  privacyPolicyVersion String
+  acceptedAt           DateTime  @default(now())
+  ipAddress            String?
+  userAgent            String?
+  createdAt            DateTime  @default(now())
+
+  @@index([userId, termsVersion])
+  @@map("terms_acceptance")
 }

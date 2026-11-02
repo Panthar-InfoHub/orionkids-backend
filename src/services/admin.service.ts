@@ -8,6 +8,7 @@ import type {
   ListLevelAttemptsQuery,
 } from "../validators/admin.schema.js";
 import { computeSessionProgression } from "./quest.service.js";
+import type { ListAccessRequestsQuery } from "../validators/registration.schema.js";
 
 export const CANONICAL_GAMES = [
   { gameId: 1, gameKey: "stroop", name: "Stroop Colour-Word" },
@@ -1319,4 +1320,202 @@ export async function getAdminQuestSessionDetail(sessionId: string) {
   }
 
   return getUserQuestSessionDetail(session.userId, sessionId);
+}
+
+/**
+ * Paginated list of access requests for administrative review.
+ */
+export async function listAccessRequests(query: ListAccessRequestsQuery) {
+  const { page, limit, status, search } = query;
+  const skip = (page - 1) * limit;
+
+  const where: any = {};
+
+  if (status && status !== "ALL") {
+    where.status = status;
+  }
+
+  if (search) {
+    where.OR = [
+      { id: { contains: search, mode: "insensitive" } },
+      { userId: { contains: search, mode: "insensitive" } },
+      {
+        user: {
+          OR: [
+            { name: { contains: search, mode: "insensitive" } },
+            { email: { contains: search, mode: "insensitive" } },
+          ],
+        },
+      },
+    ];
+  }
+
+  const [total, requests] = await Promise.all([
+    prisma.accessRequest.count({ where }),
+    prisma.accessRequest.findMany({
+      where,
+      orderBy: { submittedAt: "desc" },
+      skip,
+      take: limit,
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            image: true,
+            role: true,
+            status: true,
+            termsAccepted: true,
+            termsVersion: true,
+            termsAcceptedAt: true,
+            createdAt: true,
+            onboardingSubmittedAt: true,
+            _count: {
+              select: { childProfiles: true },
+            },
+          },
+        },
+      },
+    }),
+  ]);
+
+  return {
+    requests,
+    meta: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit) || 1,
+    },
+  };
+}
+
+/**
+ * Approve an access request atomically and set target user to ACTIVE.
+ */
+export async function approveAccessRequest(adminId: string, requestId: string) {
+  const request = await prisma.accessRequest.findUnique({
+    where: { id: requestId },
+    include: { user: true },
+  });
+
+  if (!request) {
+    throw new NotFoundError("Access request not found");
+  }
+
+  if (request.userId === adminId) {
+    throw new ForbiddenError(
+      "You cannot approve your own access request",
+      "FORBIDDEN"
+    );
+  }
+
+  if (request.status !== "PENDING") {
+    throw new ForbiddenError(
+      `Access request is already ${request.status.toLowerCase()}`,
+      "INVALID_STATUS_TRANSITION"
+    );
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    const updatedRequest = await tx.accessRequest.update({
+      where: { id: requestId },
+      data: {
+        status: "APPROVED",
+        reviewedAt: new Date(),
+        reviewedById: adminId,
+      },
+    });
+
+    const updatedUser = await tx.user.update({
+      where: { id: request.userId },
+      data: {
+        status: "ACTIVE",
+        reviewedAt: new Date(),
+        reviewedById: adminId,
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        status: true,
+        reviewedAt: true,
+        reviewedById: true,
+      },
+    });
+
+    return { request: updatedRequest, user: updatedUser };
+  });
+
+  logger.info(
+    { adminId, targetUserId: request.userId, requestId },
+    "Access request approved by admin"
+  );
+
+  return result;
+}
+
+/**
+ * Reject an access request with an optional reason.
+ */
+export async function rejectAccessRequest(
+  adminId: string,
+  requestId: string,
+  reason?: string
+) {
+  const request = await prisma.accessRequest.findUnique({
+    where: { id: requestId },
+    include: { user: true },
+  });
+
+  if (!request) {
+    throw new NotFoundError("Access request not found");
+  }
+
+  if (request.userId === adminId) {
+    throw new ForbiddenError(
+      "You cannot reject your own access request",
+      "FORBIDDEN"
+    );
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    const updatedRequest = await tx.accessRequest.update({
+      where: { id: requestId },
+      data: {
+        status: "REJECTED",
+        rejectionReason: reason || null,
+        reviewedAt: new Date(),
+        reviewedById: adminId,
+      },
+    });
+
+    const updatedUser = await tx.user.update({
+      where: { id: request.userId },
+      data: {
+        reviewedAt: new Date(),
+        reviewedById: adminId,
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        status: true,
+        reviewedAt: true,
+        reviewedById: true,
+      },
+    });
+
+    return { request: updatedRequest, user: updatedUser };
+  });
+
+  logger.info(
+    { adminId, targetUserId: request.userId, requestId, reason },
+    "Access request rejected by admin"
+  );
+
+  return result;
 }

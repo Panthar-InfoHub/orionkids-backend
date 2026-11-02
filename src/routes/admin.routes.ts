@@ -15,6 +15,9 @@ import {
   getUserChildSessionAttemptsController,
   getUserChildSessionReportController,
   getAdminQuestSessionDetailController,
+  listAccessRequestsController,
+  approveAccessRequestController,
+  rejectAccessRequestController,
 } from "../controllers/admin.controller.js";
 import { requireAdmin } from "../middlewares/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
@@ -98,6 +101,18 @@ router.get(
 router.get(
   "/quest-sessions/:sessionId",
   asyncHandler(getAdminQuestSessionDetailController)
+);
+
+
+// Access requests administration
+router.get("/access-requests", asyncHandler(listAccessRequestsController));
+router.patch(
+  "/access-requests/:requestId/approve",
+  asyncHandler(approveAccessRequestController)
+);
+router.patch(
+  "/access-requests/:requestId/reject",
+  asyncHandler(rejectAccessRequestController)
 );
 
 export default router;
