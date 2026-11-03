@@ -6,8 +6,13 @@ import type {
   UpdateUserStatusBody,
   ListQuestSessionsQuery,
   ListLevelAttemptsQuery,
+  ListReportsQuery,
 } from "../validators/admin.schema.js";
-import { computeSessionProgression } from "./quest.service.js";
+import {
+  computeSessionProgression,
+  generateOrGetReport,
+  getReportPdfBuffer,
+} from "./quest.service.js";
 import type { ListAccessRequestsQuery } from "../validators/registration.schema.js";
 
 export const CANONICAL_GAMES = [
@@ -1584,4 +1589,126 @@ export async function rejectAccessRequest(
   );
 
   return result;
+}
+
+/**
+ * Admin operation to explicitly regenerate a report for a completed quest session using OpenAI.
+ */
+export async function adminRegenerateReport(sessionId: string) {
+  const session = await prisma.questSession.findUnique({
+    where: { id: sessionId },
+    select: { id: true, userId: true, status: true },
+  });
+
+  if (!session) {
+    throw new NotFoundError("Quest session not found");
+  }
+
+  if (session.status !== "COMPLETED") {
+    throw new ForbiddenError(
+      "Cannot generate a report for an in-progress session. All 18 levels must be completed.",
+      "QUEST_INCOMPLETE"
+    );
+  }
+
+  const report = await generateOrGetReport(session.userId, sessionId, true, true);
+  return report;
+}
+
+/**
+ * Admin operation to download the PDF for any child's completed quest report.
+ */
+export async function adminGetReportPdf(sessionId: string): Promise<Uint8Array> {
+  return await getReportPdfBuffer("", sessionId, true);
+}
+
+/**
+ * Admin operation to list and filter reports across all children and parents.
+ */
+export async function listAllQuestReports(query: ListReportsQuery) {
+  const page = Math.max(1, query.page || 1);
+  const limit = Math.min(50, Math.max(1, query.limit || 10));
+  const skip = (page - 1) * limit;
+
+  const where: any = {};
+
+  if (query.status) {
+    where.status = query.status;
+  }
+
+  if (query.childProfileId) {
+    where.childProfileId = query.childProfileId;
+  }
+
+  if (query.search) {
+    const s = query.search.trim();
+    where.OR = [
+      { childName: { contains: s, mode: "insensitive" } },
+      { user: { name: { contains: s, mode: "insensitive" } } },
+      { user: { email: { contains: s, mode: "insensitive" } } },
+    ];
+  }
+
+  const [reports, total] = await Promise.all([
+    prisma.questReport.findMany({
+      where,
+      skip,
+      take: limit,
+      orderBy: { generatedAt: "desc" },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+        questSession: {
+          select: {
+            id: true,
+            status: true,
+            startedAt: true,
+            completedAt: true,
+          },
+        },
+        childProfile: {
+          select: {
+            id: true,
+            childName: true,
+            age: true,
+            selectedClass: true,
+          },
+        },
+      },
+    }),
+    prisma.questReport.count({ where }),
+  ]);
+
+  return {
+    reports: reports.map((r) => ({
+      id: r.id,
+      questSessionId: r.questSessionId,
+      userId: r.userId,
+      parentName: r.user.name,
+      parentEmail: r.user.email,
+      childProfileId: r.childProfileId,
+      childName: r.childName,
+      age: r.age,
+      selectedClass: r.selectedClass,
+      school: r.school,
+      overallAccuracy: r.overallAccuracy,
+      totalDurationMs: r.totalDurationMs,
+      status: r.status,
+      modelName: r.modelName,
+      schemaVersion: r.schemaVersion,
+      generatedAt: r.generatedAt,
+      questCompletedAt: r.questSession?.completedAt || null,
+    })),
+    meta: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+    },
+  };
 }

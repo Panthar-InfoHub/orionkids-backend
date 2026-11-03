@@ -27,6 +27,7 @@
     "db:deploy-neon": "tsx scripts/deploy-neon-migration.ts",
     "db:verify-schema": "tsx scripts/verify-schema.ts",
     "db:deploy-terms": "tsx scripts/deploy-terms-migration.ts",
+    "db:deploy-report": "tsx scripts/deploy-report-migration.ts",
     "test:reg": "node --import tsx --test tests/registration.workflow.test.ts"
   },
   "keywords": [],
@@ -43,6 +44,7 @@
     "express": "^5.3.0",
     "helmet": "^8.3.0",
     "openai": "^7.47.0",
+    "pdf-lib": "^1.17.1",
     "pino": "^10.4.0",
     "pino-http": "^11.0.0",
     "zod": "^4.6.5"

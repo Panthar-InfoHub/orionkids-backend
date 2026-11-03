@@ -14,7 +14,9 @@ import {
   getChildProgress,
   getChildQuestSessions,
   getChildReports,
+  listAllParentReports,
 } from "../services/child.service.js";
+import { getReportPdfBuffer } from "../services/quest.service.js";
 
 function getUserId(req: Request): string {
   if (!req.authCtx?.userId) {
@@ -79,4 +81,41 @@ export async function getChildReportsController(req: Request, res: Response) {
   const { childId } = childIdParamSchema.parse(req.params);
   const reports = await getChildReports(userId, childId);
   sendSuccess(res, 200, reports, "Child reports retrieved successfully");
+}
+
+export async function listAllParentReportsController(req: Request, res: Response) {
+  const userId = getUserId(req);
+  const reports = await listAllParentReports(userId);
+  sendSuccess(res, 200, reports, "All parent child reports retrieved successfully");
+}
+
+export async function downloadChildSessionReportPdfController(
+  req: Request,
+  res: Response
+) {
+  const userId = getUserId(req);
+  const { childId } = childIdParamSchema.parse(req.params);
+  const rawSessionId = req.params.sessionId;
+  const sessionId = typeof rawSessionId === "string" ? rawSessionId : Array.isArray(rawSessionId) ? rawSessionId[0] : "";
+  if (!sessionId) {
+    res.status(400).json({ error: "Session ID is required" });
+    return;
+  }
+
+  // Ensure child profile belongs to user
+  const child = await getChildProfile(userId, childId);
+  if (!child) {
+    res.status(404).json({ error: "Child profile not found" });
+    return;
+  }
+
+  const pdfBuffer = await getReportPdfBuffer(userId, sessionId, false);
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="OrionKids-${child.childName.replace(/\s+/g, "_")}-Report.pdf"`
+  );
+  res.setHeader("Content-Length", pdfBuffer.byteLength);
+  res.status(200).send(Buffer.from(pdfBuffer));
 }

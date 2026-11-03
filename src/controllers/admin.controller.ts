@@ -20,6 +20,7 @@ import {
   userChildParamsSchema,
   userChildSessionParamsSchema,
   sessionIdParamSchema,
+  listReportsQuerySchema,
 } from "../validators/admin.schema.js";
 import {
   getAdminOverview,
@@ -37,6 +38,9 @@ import {
   getUserChildSessionAttempts,
   getUserChildSessionReport,
   getAdminQuestSessionDetail,
+  adminRegenerateReport,
+  adminGetReportPdf,
+  listAllQuestReports,
 } from "../services/admin.service.js";
 import { sendSuccess } from "../utils/apiResponse.js";
 import { UnauthorizedError } from "../utils/errors.js";
@@ -241,4 +245,50 @@ export async function rejectAccessRequestController(
 
   const result = await rejectAccessRequest(adminId, requestId, body.reason);
   sendSuccess(res, 200, result, "Access request rejected successfully");
+}
+
+export async function adminRegenerateReportController(
+  req: Request,
+  res: Response
+) {
+  const { sessionId } = sessionIdParamSchema.parse(req.params);
+  const report = await adminRegenerateReport(sessionId);
+  sendSuccess(res, 200, report, "Quest report regenerated successfully");
+}
+
+export async function adminDownloadReportPdfController(
+  req: Request,
+  res: Response
+) {
+  const { sessionId } = sessionIdParamSchema.parse(req.params);
+  const pdfBuffer = await adminGetReportPdf(sessionId);
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="OrionKids-Admin-Report-${sessionId.slice(-6)}.pdf"`
+  );
+  res.setHeader("Content-Length", pdfBuffer.byteLength);
+  res.status(200).send(Buffer.from(pdfBuffer));
+}
+
+export async function adminListReportsController(req: Request, res: Response) {
+  const query = listReportsQuerySchema.parse(req.query);
+  const result = await listAllQuestReports(query);
+  sendSuccess(res, 200, result.reports, "Quest reports retrieved successfully", result.meta);
+}
+
+export async function getAdminSessionReportController(
+  req: Request,
+  res: Response
+) {
+  const { sessionId } = sessionIdParamSchema.parse(req.params);
+  const detail = await getAdminQuestSessionDetail(sessionId);
+  const result = await getUserSessionReport(detail.session.userId, sessionId);
+  sendSuccess(
+    res,
+    200,
+    result,
+    result.hasReport ? "Assessment report retrieved" : result.message
+  );
 }

@@ -11,6 +11,8 @@ import {
   startLevelController,
   completeLevelController,
   getReportController,
+  generateReportController,
+  downloadReportPdfController,
   legacyWarmUpSubmitController,
   legacyStroopLevelSubmitController,
 } from "../controllers/quest.controller.js";
@@ -59,6 +61,14 @@ router.post(
 router.get(
   "/quest/sessions/:sessionId/report",
   asyncHandler(getReportController)
+);
+router.post(
+  "/quest/sessions/:sessionId/report",
+  asyncHandler(generateReportController)
+);
+router.get(
+  "/quest/sessions/:sessionId/report/pdf",
+  asyncHandler(downloadReportPdfController)
 );
 
 // 5. Legacy backward compatibility endpoints (now fully wired to PostgreSQL persistence)

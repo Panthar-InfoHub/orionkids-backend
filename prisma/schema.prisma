@@ -36,6 +36,13 @@ enum LevelAttemptStatus {
   ABANDONED
 }
 
+enum ReportStatus {
+  PENDING
+  GENERATING
+  GENERATED
+  FAILED
+}
+
 model User {
   id                    String         @id
   name                  String
@@ -222,11 +229,17 @@ model QuestReport {
   gameSummaries      Json
   cognitiveFacets    Json
   growthObservations Json
-  schemaVersion      Int           @default(1)
+  aiReport           Json?
+  status             ReportStatus  @default(GENERATED)
+  modelName          String?
+  errorMessage       String?
+  schemaVersion      Int           @default(2)
   generatedAt        DateTime      @default(now())
+  updatedAt          DateTime      @default(now()) @updatedAt
 
   @@index([userId])
   @@index([childProfileId])
+  @@index([status])
   @@map("quest_report")
 }
 

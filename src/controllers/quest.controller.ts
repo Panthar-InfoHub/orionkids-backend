@@ -18,6 +18,7 @@ import {
   startLevelAttempt,
   completeLevelAttempt,
   generateOrGetReport,
+  getReportPdfBuffer,
   getResumeState,
   saveAttemptCheckpoint,
 } from "../services/quest.service.js";
@@ -143,6 +144,30 @@ export async function getReportController(req: Request, res: Response) {
 
   const report = await generateOrGetReport(userId, sessionId);
   sendSuccess(res, 200, report, "Cognitive assessment report retrieved");
+}
+
+export async function generateReportController(req: Request, res: Response) {
+  const userId = getUserId(req);
+  const sessionId = getParamString(req.params.sessionId, "sessionId");
+  const force = req.query.force === "true";
+
+  const report = await generateOrGetReport(userId, sessionId, force, false);
+  sendSuccess(res, 200, report, "Cognitive assessment report generated successfully");
+}
+
+export async function downloadReportPdfController(req: Request, res: Response) {
+  const userId = getUserId(req);
+  const sessionId = getParamString(req.params.sessionId, "sessionId");
+
+  const pdfBuffer = await getReportPdfBuffer(userId, sessionId, false);
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="OrionKids-Assessment-Report-${sessionId.slice(-6)}.pdf"`
+  );
+  res.setHeader("Content-Length", pdfBuffer.byteLength);
+  res.status(200).send(Buffer.from(pdfBuffer));
 }
 
 // Backward compatibility handlers for legacy frontend endpoints:

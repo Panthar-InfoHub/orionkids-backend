@@ -644,6 +644,9 @@ export async function getChildReports(userId: string, childId: string) {
         gameSummaries: true,
         cognitiveFacets: true,
         growthObservations: true,
+        aiReport: true,
+        status: true,
+        modelName: true,
         schemaVersion: true,
         generatedAt: true,
       },
@@ -674,7 +677,55 @@ export async function getChildReports(userId: string, childId: string) {
     gameSummaries: r.gameSummaries,
     cognitiveFacets: r.cognitiveFacets,
     growthObservations: r.growthObservations,
+    aiReport: r.aiReport,
+    status: r.status,
+    modelName: r.modelName,
     schemaVersion: r.schemaVersion,
+    generatedAt: r.generatedAt,
+  }));
+}
+
+export async function listAllParentReports(userId: string) {
+  const reports = await prisma.questReport.findMany({
+    where: { userId },
+    orderBy: { generatedAt: "desc" },
+    include: {
+      questSession: {
+        select: {
+          id: true,
+          status: true,
+          completedAt: true,
+          startedAt: true,
+        },
+      },
+      childProfile: {
+        select: {
+          id: true,
+          childName: true,
+          selectedClass: true,
+          age: true,
+        },
+      },
+    },
+  });
+
+  return reports.map((r) => ({
+    id: r.id,
+    questSessionId: r.questSessionId,
+    childProfileId: r.childProfileId || r.childProfile?.id || null,
+    childName: r.childName,
+    age: r.age,
+    selectedClass: r.selectedClass,
+    school: r.school,
+    overallAccuracy: r.overallAccuracy,
+    totalDurationMs: r.totalDurationMs,
+    gameSummaries: r.gameSummaries,
+    cognitiveFacets: r.cognitiveFacets,
+    growthObservations: r.growthObservations,
+    aiReport: r.aiReport,
+    status: r.status,
+    modelName: r.modelName,
+    questCompletedAt: r.questSession?.completedAt || null,
     generatedAt: r.generatedAt,
   }));
 }

@@ -30,6 +30,9 @@ const envSchema = z.object({
   COOKIE_DOMAIN: z.string().optional(),
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
+  OPEN_AI_API_KEY: z.string().optional(),
+  OPENAI_API_KEY: z.string().optional(),
+  OPENAI_REPORT_MODEL: z.string().default("gpt-4o-mini"),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -45,3 +48,9 @@ export const env = parsed.data;
 
 export const isDev = env.NODE_ENV === "development";
 export const isProd = env.NODE_ENV === "production";
+export const openaiApiKey =
+  env.OPEN_AI_API_KEY ||
+  env.OPENAI_API_KEY ||
+  process.env.OPEN_AI_API_KEY ||
+  process.env.OPENAI_API_KEY ||
+  "";

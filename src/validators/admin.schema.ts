@@ -94,3 +94,13 @@ export const sessionIdParamSchema = z.object({
 });
 
 export type SessionIdParam = z.infer<typeof sessionIdParamSchema>;
+
+export const listReportsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(50).default(10),
+  search: z.string().trim().max(100).optional(),
+  status: z.enum(["PENDING", "GENERATING", "GENERATED", "FAILED"]).optional(),
+  childProfileId: z.string().optional(),
+});
+
+export type ListReportsQuery = z.infer<typeof listReportsQuerySchema>;

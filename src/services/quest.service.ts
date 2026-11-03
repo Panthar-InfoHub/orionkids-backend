@@ -9,6 +9,14 @@ import type {
   CompleteLevelInput,
 } from "../validators/quest.schema.js";
 import { GAME_KEY_TO_ID, GAME_ID_TO_KEY } from "../validators/quest.schema.js";
+import {
+  generateAiReport,
+  generateRuleBasedReport,
+  CANONICAL_GAMES,
+  type GameplayReportInput,
+  type AiStructuredReport,
+} from "./aiReport.service.js";
+import { generateReportPdf } from "./pdfReport.service.js";
 
 /**
  * Helper to compute the authoritative progression stage from a session and its completed attempts.
@@ -988,20 +996,25 @@ export async function completeLevelAttempt(
   );
 }
 
-export async function generateOrGetReport(userId: string, sessionId: string) {
-  // Fast path: if report is already stored, return it immediately without fetching attempt records
+export async function generateOrGetReport(
+  userId: string,
+  sessionId: string,
+  forceRegenerate = false,
+  isAdmin = false
+) {
+  // Fast path: if report is already stored and not forced, return it immediately without fetching attempt records
   const existingReport = await prisma.questReport.findUnique({
     where: { questSessionId: sessionId },
   });
 
-  if (existingReport) {
-    if (existingReport.userId !== userId) {
+  if (existingReport && !forceRegenerate) {
+    if (!isAdmin && existingReport.userId !== userId) {
       throw new ForbiddenError("You do not own this quest session");
     }
     return existingReport;
   }
 
-  // Slow path: generate report for the first time with scoped relation fields
+  // Authoritative path: generate report from authoritative database records
   const session = await prisma.questSession.findUnique({
     where: { id: sessionId },
     select: {
@@ -1010,6 +1023,8 @@ export async function generateOrGetReport(userId: string, sessionId: string) {
       status: true,
       currentGame: true,
       currentLevel: true,
+      startedAt: true,
+      completedAt: true,
       childProfileId: true,
       childProfile: {
         select: {
@@ -1049,7 +1064,7 @@ export async function generateOrGetReport(userId: string, sessionId: string) {
     throw new NotFoundError("Quest session not found");
   }
 
-  if (session.userId !== userId) {
+  if (!isAdmin && session.userId !== userId) {
     throw new ForbiddenError("You do not own this quest session");
   }
 
@@ -1062,7 +1077,7 @@ export async function generateOrGetReport(userId: string, sessionId: string) {
   let childProfile = session.childProfile;
   if (!childProfile) {
     childProfile = await prisma.childProfile.findFirst({
-      where: { userId },
+      where: { userId: session.userId },
       orderBy: { createdAt: "asc" },
       select: {
         id: true,
@@ -1211,23 +1226,96 @@ export async function generateOrGetReport(userId: string, sessionId: string) {
     },
   };
 
+  // Prepare input for AI report generation
+  const gamesPayload = CANONICAL_GAMES.map((cg) => {
+    const gameAttempts = attempts.filter((a) => a.gameId === cg.id);
+    const summary = gameSummaries[cg.key] || {
+      levelsCompleted: 0,
+      averageAccuracy: null,
+      averageReactionTimeMs: null,
+    };
+    return {
+      gameId: cg.id,
+      gameKey: cg.key,
+      gameName: cg.name,
+      domain: cg.domain,
+      levelsCompleted: summary.levelsCompleted,
+      averageAccuracy: summary.averageAccuracy,
+      averageReactionTimeMs: summary.averageReactionTimeMs,
+      levels: [1, 2, 3].map((lvl) => {
+        const att = gameAttempts.find((a) => a.levelNumber === lvl);
+        return {
+          levelNumber: lvl,
+          attemptNumber: att?.attemptNumber || 1,
+          status: att ? "COMPLETED" : "NOT_COMPLETED",
+          totalTrials: att?.totalTrials ?? null,
+          correctTrials: att?.correctTrials ?? null,
+          accuracy: att?.accuracy ?? null,
+          durationMs: att?.durationMs ?? null,
+          averageReactionTimeMs: att?.averageReactionTimeMs ?? null,
+        };
+      }),
+    };
+  });
+
+  const aiInput: GameplayReportInput = {
+    child: {
+      childName,
+      age,
+      selectedClass,
+      school,
+    },
+    quest: {
+      sessionId,
+      startedAt: session.startedAt.toISOString(),
+      completedAt: session.completedAt ? session.completedAt.toISOString() : null,
+      totalLevelsCompleted,
+      overallAccuracy,
+      totalDurationMs,
+    },
+    warmUp: {
+      copingStrategy,
+      learningStyle,
+      favoriteSubject,
+      emotionalState,
+    },
+    games: gamesPayload,
+  };
+
+  // Call OpenAI (or fallback)
+  const aiResult = await generateAiReport(aiInput);
+
+  const reportData = {
+    questSessionId: sessionId,
+    userId: session.userId,
+    childProfileId: session.childProfileId || childProfile?.id || null,
+    childName,
+    age,
+    selectedClass,
+    school,
+    overallAccuracy,
+    totalDurationMs,
+    gameSummaries,
+    cognitiveFacets,
+    growthObservations,
+    aiReport: aiResult.report as any,
+    status: "GENERATED" as const,
+    modelName: aiResult.modelName,
+    errorMessage: aiResult.errorMessage || null,
+    schemaVersion: 2,
+    generatedAt: new Date(),
+  };
+
+  if (existingReport && forceRegenerate) {
+    return await prisma.questReport.update({
+      where: { questSessionId: sessionId },
+      data: reportData,
+    });
+  }
+
   try {
     const report = await prisma.questReport.create({
-      data: {
-        questSessionId: sessionId,
-        userId,
-        childProfileId: session.childProfileId || childProfile?.id || null,
-        childName,
-        age,
-        selectedClass,
-        school,
-        overallAccuracy,
-        totalDurationMs,
-        gameSummaries,
-        cognitiveFacets,
-        growthObservations,
-        schemaVersion: 1,
-      },
+      data: reportData,
     });
 
     return report;
@@ -1241,6 +1329,104 @@ export async function generateOrGetReport(userId: string, sessionId: string) {
     }
     throw err;
   }
+}
+
+export async function getReportPdfBuffer(
+  userId: string,
+  sessionId: string,
+  isAdmin = false
+): Promise<Uint8Array> {
+  const report = await prisma.questReport.findUnique({
+    where: { questSessionId: sessionId },
+    include: {
+      questSession: {
+        select: {
+          startedAt: true,
+          completedAt: true,
+        },
+      },
+    },
+  });
+
+  if (!report) {
+    throw new NotFoundError("Quest assessment report not found");
+  }
+
+  if (!isAdmin && report.userId !== userId) {
+    throw new ForbiddenError(
+      "You do not have permission to access this report",
+      "ACCESS_DENIED"
+    );
+  }
+
+  let structuredAi = report.aiReport as AiStructuredReport | null;
+  if (!structuredAi) {
+    // Generate authoritative structured representation from existing saved report fields
+    structuredAi = generateRuleBasedReport({
+      child: {
+        childName: report.childName,
+        age: report.age,
+        selectedClass: report.selectedClass,
+        school: report.school,
+      },
+      quest: {
+        sessionId: report.questSessionId,
+        startedAt: report.questSession.startedAt.toISOString(),
+        completedAt: report.questSession.completedAt
+          ? report.questSession.completedAt.toISOString()
+          : null,
+        totalLevelsCompleted: 18,
+        overallAccuracy: report.overallAccuracy,
+        totalDurationMs: report.totalDurationMs,
+      },
+      warmUp: {
+        copingStrategy:
+          (report.growthObservations as any)?.copingStrategy || "retry",
+        learningStyle:
+          (report.growthObservations as any)?.learningStyle || "both",
+        favoriteSubject:
+          (report.growthObservations as any)?.favoriteSubject || "exploration",
+        emotionalState:
+          (report.growthObservations as any)?.emotionalState || "happy",
+      },
+      games: CANONICAL_GAMES.map((cg) => {
+        const gs = (report.gameSummaries as any)?.[cg.key] || {};
+        return {
+          gameId: cg.id,
+          gameKey: cg.key,
+          gameName: cg.name,
+          domain: cg.domain,
+          levelsCompleted: gs.levelsCompleted ?? 3,
+          averageAccuracy: gs.averageAccuracy ?? null,
+          averageReactionTimeMs: gs.averageReactionTimeMs ?? null,
+          levels: [1, 2, 3].map((lvl) => ({
+            levelNumber: lvl,
+            attemptNumber: 1,
+            status: "COMPLETED",
+            totalTrials: null,
+            correctTrials: null,
+            accuracy: gs.averageAccuracy ?? null,
+            durationMs: null,
+            averageReactionTimeMs: gs.averageReactionTimeMs ?? null,
+          })),
+        };
+      }),
+    });
+  }
+
+  return await generateReportPdf({
+    childName: report.childName,
+    age: report.age,
+    selectedClass: report.selectedClass,
+    school: report.school,
+    questCompletedAt: report.questSession.completedAt
+      ? report.questSession.completedAt.toISOString()
+      : null,
+    reportGeneratedAt: report.generatedAt.toISOString(),
+    overallAccuracy: report.overallAccuracy,
+    totalDurationMs: report.totalDurationMs,
+    aiReport: structuredAi,
+  });
 }
 
 function formatSessionResponse(session: any) {

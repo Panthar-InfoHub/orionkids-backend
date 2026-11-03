@@ -18,6 +18,10 @@ import {
   listAccessRequestsController,
   approveAccessRequestController,
   rejectAccessRequestController,
+  adminRegenerateReportController,
+  adminDownloadReportPdfController,
+  adminListReportsController,
+  getAdminSessionReportController,
 } from "../controllers/admin.controller.js";
 import { requireAdmin } from "../middlewares/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
@@ -102,6 +106,21 @@ router.get(
   "/quest-sessions/:sessionId",
   asyncHandler(getAdminQuestSessionDetailController)
 );
+router.get(
+  "/quest-sessions/:sessionId/report",
+  asyncHandler(getAdminSessionReportController)
+);
+router.post(
+  "/quest-sessions/:sessionId/regenerate-report",
+  asyncHandler(adminRegenerateReportController)
+);
+router.get(
+  "/quest-sessions/:sessionId/report/pdf",
+  asyncHandler(adminDownloadReportPdfController)
+);
+
+// Reports administration across all children and users
+router.get("/reports", asyncHandler(adminListReportsController));
 
 
 // Access requests administration

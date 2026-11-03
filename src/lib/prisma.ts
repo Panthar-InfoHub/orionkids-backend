@@ -9,8 +9,8 @@ const adapter = new PrismaNeon(
   {
     connectionString: env.DATABASE_URL,
     max: 20,
-    idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 10_000,
+    idleTimeoutMillis: 60_000,
+    connectionTimeoutMillis: 45_000,
   },
   {
     onPoolError: (err) => {
