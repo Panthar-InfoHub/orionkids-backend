@@ -41,7 +41,11 @@ export const warmUpAnswersSchema = z.object({
 export const startLevelSchema = z.object({
   gameKey: gameKeysEnum,
   levelNumber: z.number().int().min(1).max(3),
+  idempotencyKey: z.string().trim().min(1).max(128).optional(),
+  isReplay: z.boolean().optional(),
 });
+
+export type StartLevelInput = z.infer<typeof startLevelSchema>;
 
 export const completeLevelSchema = z
   .object({

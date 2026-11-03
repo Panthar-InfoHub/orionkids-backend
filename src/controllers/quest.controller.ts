@@ -95,11 +95,20 @@ export async function startLevelController(req: Request, res: Response) {
   const sessionId = getParamString(req.params.sessionId, "sessionId");
   const validated = startLevelSchema.parse(req.body);
 
+  const rawHeaderKey = req.headers["x-idempotency-key"] || req.headers["idempotency-key"];
+  const idempotencyKey =
+    validated.idempotencyKey ||
+    (typeof rawHeaderKey === "string" ? rawHeaderKey : undefined);
+
   const result = await startLevelAttempt(
     userId,
     sessionId,
     validated.gameKey,
-    validated.levelNumber
+    validated.levelNumber,
+    {
+      idempotencyKey,
+      isReplay: validated.isReplay,
+    }
   );
 
   sendSuccess(res, 200, result, "Level attempt started");

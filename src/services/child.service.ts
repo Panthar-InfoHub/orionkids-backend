@@ -128,17 +128,36 @@ export async function listChildren(userId: string) {
     let currentStage = "NOT_STARTED";
     let currentGame = 1;
     let currentLevel = 1;
+    let hasInProgress = Boolean(inProgressSession);
+    let totalCompletedQuests = completedSessions.length;
 
     if (inProgressSession) {
       const prog = computeSessionProgression(
         inProgressSession,
         inProgressSession.levelAttempts
       );
-      completedLevelsCount = prog.highestCompletedIndex;
-      progressOverall = Math.round((completedLevelsCount / 18) * 100);
-      currentStage = inProgressSession.currentStage;
-      currentGame = prog.currentGame;
-      currentLevel = prog.currentLevel;
+      if (prog.isQuestComplete || prog.highestCompletedIndex >= 18) {
+        hasInProgress = false;
+        totalCompletedQuests = Math.max(1, totalCompletedQuests + 1);
+        completedLevelsCount = 18;
+        progressOverall = 100;
+        currentStage = "COMPLETED";
+        currentGame = 6;
+        currentLevel = 3;
+      } else if (completedSessions.length > 0 && inProgressSession.levelAttempts.length === 0) {
+        hasInProgress = false;
+        completedLevelsCount = 18;
+        progressOverall = 100;
+        currentStage = "COMPLETED";
+        currentGame = 6;
+        currentLevel = 3;
+      } else {
+        completedLevelsCount = prog.highestCompletedIndex;
+        progressOverall = Math.round((completedLevelsCount / 18) * 100);
+        currentStage = inProgressSession.currentStage;
+        currentGame = prog.currentGame;
+        currentLevel = prog.currentLevel;
+      }
     } else if (completedSessions.length > 0) {
       completedLevelsCount = 18;
       progressOverall = 100;
@@ -167,8 +186,8 @@ export async function listChildren(userId: string) {
       updatedAt: child.updatedAt,
       stats: {
         totalQuests: sessions.length,
-        completedQuests: completedSessions.length,
-        hasInProgressQuest: Boolean(inProgressSession),
+        completedQuests: totalCompletedQuests,
+        hasInProgressQuest: hasInProgress,
         activeSessionId: inProgressSession?.id || null,
         currentStage,
         currentGame,
@@ -225,17 +244,36 @@ export async function getChildProfile(userId: string, childId: string) {
   let currentStage = "NOT_STARTED";
   let currentGame = 1;
   let currentLevel = 1;
+  let hasInProgress = Boolean(inProgressSession);
+  let totalCompletedQuests = completedSessions.length;
 
   if (inProgressSession) {
     const prog = computeSessionProgression(
       inProgressSession,
       inProgressSession.levelAttempts
     );
-    completedLevelsCount = prog.highestCompletedIndex;
-    progressOverall = Math.round((completedLevelsCount / 18) * 100);
-    currentStage = inProgressSession.currentStage;
-    currentGame = prog.currentGame;
-    currentLevel = prog.currentLevel;
+    if (prog.isQuestComplete || prog.highestCompletedIndex >= 18) {
+      hasInProgress = false;
+      totalCompletedQuests = Math.max(1, totalCompletedQuests + 1);
+      completedLevelsCount = 18;
+      progressOverall = 100;
+      currentStage = "COMPLETED";
+      currentGame = 6;
+      currentLevel = 3;
+    } else if (completedSessions.length > 0 && inProgressSession.levelAttempts.length === 0) {
+      hasInProgress = false;
+      completedLevelsCount = 18;
+      progressOverall = 100;
+      currentStage = "COMPLETED";
+      currentGame = 6;
+      currentLevel = 3;
+    } else {
+      completedLevelsCount = prog.highestCompletedIndex;
+      progressOverall = Math.round((completedLevelsCount / 18) * 100);
+      currentStage = inProgressSession.currentStage;
+      currentGame = prog.currentGame;
+      currentLevel = prog.currentLevel;
+    }
   } else if (completedSessions.length > 0) {
     completedLevelsCount = 18;
     progressOverall = 100;
@@ -264,8 +302,8 @@ export async function getChildProfile(userId: string, childId: string) {
     updatedAt: child.updatedAt,
     stats: {
       totalQuests: sessions.length,
-      completedQuests: completedSessions.length,
-      hasInProgressQuest: Boolean(inProgressSession),
+      completedQuests: totalCompletedQuests,
+      hasInProgressQuest: hasInProgress,
       activeSessionId: inProgressSession?.id || null,
       currentStage,
       currentGame,
@@ -368,35 +406,41 @@ export async function getChildProgress(userId: string, childId: string) {
     );
   }
 
+  const completedSession = await prisma.questSession.findFirst({
+    where: { childProfileId: childId, status: "COMPLETED" },
+    include: {
+      warmUpSubmission: {
+        select: { id: true, completedAt: true },
+      },
+      levelAttempts: {
+        where: { status: "COMPLETED" },
+        orderBy: [{ gameId: "asc" }, { levelNumber: "asc" }, { attemptNumber: "desc" }],
+        select: {
+          id: true,
+          gameId: true,
+          gameKey: true,
+          levelNumber: true,
+          accuracy: true,
+          durationMs: true,
+          averageReactionTimeMs: true,
+          completedAt: true,
+        },
+      },
+      questReport: {
+        select: { id: true },
+      },
+    },
+    orderBy: { completedAt: "desc" },
+  });
+
   let session = inProgressSession;
 
   if (!session) {
-    session = await prisma.questSession.findFirst({
-      where: { childProfileId: childId, status: "COMPLETED" },
-      include: {
-        warmUpSubmission: {
-          select: { id: true, completedAt: true },
-        },
-        levelAttempts: {
-          where: { status: "COMPLETED" },
-          orderBy: [{ gameId: "asc" }, { levelNumber: "asc" }, { attemptNumber: "desc" }],
-          select: {
-            id: true,
-            gameId: true,
-            gameKey: true,
-            levelNumber: true,
-            accuracy: true,
-            durationMs: true,
-            averageReactionTimeMs: true,
-            completedAt: true,
-          },
-        },
-        questReport: {
-          select: { id: true },
-        },
-      },
-      orderBy: { completedAt: "desc" },
-    });
+    session = completedSession;
+  } else if (completedSession && inProgressSession?.levelAttempts.length === 0) {
+    // If the child completed an authoritative quest session, and inProgressSession is just starting or empty,
+    // display the completed session matrix!
+    session = completedSession;
   }
 
   if (!session) {
@@ -454,6 +498,7 @@ export async function getChildProgress(userId: string, childId: string) {
         status = "COMPLETED";
       } else if (
         session!.status === "IN_PROGRESS" &&
+        !prog.isQuestComplete &&
         overallIndex === authorizedIndex &&
         Boolean(session!.warmUpSubmission)
       ) {
@@ -491,7 +536,7 @@ export async function getChildProgress(userId: string, childId: string) {
     },
     hasSession: true,
     sessionId: session.id,
-    status: session.status,
+    status: prog.isQuestComplete ? "COMPLETED" : session.status,
     currentStage: session.currentStage,
     currentGame: prog.currentGame,
     currentLevel: prog.currentLevel,

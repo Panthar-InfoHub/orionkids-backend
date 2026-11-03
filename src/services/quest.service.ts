@@ -422,118 +422,221 @@ export async function startLevelAttempt(
   userId: string,
   sessionId: string,
   gameKey: GameKey,
-  levelNumber: number
+  levelNumber: number,
+  options?: {
+    idempotencyKey?: string;
+    isReplay?: boolean;
+  }
 ) {
-  const session = await prisma.questSession.findUnique({
-    where: { id: sessionId },
-    select: {
-      id: true,
-      userId: true,
-      status: true,
-      currentGame: true,
-      currentLevel: true,
-      currentStage: true,
-      warmUpSubmission: { select: { id: true } },
-      levelAttempts: {
-        where: { status: "COMPLETED" },
-        select: { gameKey: true, levelNumber: true },
-      },
-    },
-  });
-
-  if (!session) {
-    throw new NotFoundError("Quest session not found");
+  const requestedGameId = GAME_KEY_TO_ID[gameKey];
+  if (!requestedGameId) {
+    throw new ValidationError("Invalid game key");
   }
+  const requestedOverallIndex = (requestedGameId - 1) * 3 + levelNumber;
+  const idempotencyKey = options?.idempotencyKey?.trim() || null;
+  const isReplay = Boolean(options?.isReplay);
 
-  if (session.userId !== userId) {
-    throw new ForbiddenError("You do not own this quest session");
-  }
+  return prisma.$transaction(async (tx) => {
+    // 1. Concurrency lock: serialize concurrent level-start operations on the same quest session
+    await tx.$queryRaw`SELECT id FROM quest_session WHERE id = ${sessionId} FOR UPDATE`;
 
-  if (session.status !== "IN_PROGRESS") {
-    throw new ValidationError("Quest session is already closed");
-  }
-
-  if (!session.warmUpSubmission) {
-    throw new ValidationError(
-      "Warm-up questionnaire must be completed before starting levels"
-    );
-  }
-
-  // Compute authoritative progression based on contiguous completions
-  let currentSession = session;
-  const prog = computeSessionProgression(session, session.levelAttempts);
-  if (prog.needsReconciliation) {
-    currentSession = await prisma.questSession.update({
+    const session = await tx.questSession.findUnique({
       where: { id: sessionId },
-      data: {
-        currentGame: prog.currentGame,
-        currentLevel: prog.currentLevel,
-        currentStage: prog.currentStage,
-        status: prog.isQuestComplete ? "COMPLETED" : "IN_PROGRESS",
-        lastActivityAt: new Date(),
-      },
-      include: {
-        warmUpSubmission: true,
+      select: {
+        id: true,
+        userId: true,
+        status: true,
+        currentGame: true,
+        currentLevel: true,
+        currentStage: true,
+        warmUpSubmission: { select: { id: true } },
         levelAttempts: {
-          where: { status: "COMPLETED" },
+          orderBy: [{ startedAt: "asc" }, { attemptNumber: "asc" }],
+          select: {
+            id: true,
+            gameId: true,
+            gameKey: true,
+            levelNumber: true,
+            attemptNumber: true,
+            status: true,
+            metrics: true,
+            startedAt: true,
+          },
         },
       },
     });
-  }
 
-  const requestedGameId = GAME_KEY_TO_ID[gameKey];
-  const requestedOverallIndex = (requestedGameId - 1) * 3 + levelNumber;
-  const authorizedOverallIndex =
-    (currentSession.currentGame - 1) * 3 + currentSession.currentLevel;
+    if (!session) {
+      throw new NotFoundError("Quest session not found");
+    }
 
-  // Reject skipping forward beyond authorized stage
-  if (requestedOverallIndex > authorizedOverallIndex) {
-    throw new ForbiddenError(
-      `Level progression violation: Game ${requestedGameId} Level ${levelNumber} is locked. You are on Game ${currentSession.currentGame} Level ${currentSession.currentLevel}.`
+    if (session.userId !== userId) {
+      throw new ForbiddenError("You do not own this quest session");
+    }
+
+    if (session.status !== "IN_PROGRESS") {
+      throw new ValidationError("Quest session is already closed");
+    }
+
+    if (!session.warmUpSubmission) {
+      throw new ValidationError(
+        "Warm-up questionnaire must be completed before starting levels"
+      );
+    }
+
+    // Authoritative progression calculation
+    const completedAttempts = session.levelAttempts.filter(
+      (a) => a.status === "COMPLETED"
     );
-  }
+    let currentSession = session;
+    const prog = computeSessionProgression(session, completedAttempts);
+    if (prog.needsReconciliation) {
+      currentSession = await tx.questSession.update({
+        where: { id: sessionId },
+        data: {
+          currentGame: prog.currentGame,
+          currentLevel: prog.currentLevel,
+          currentStage: prog.currentStage,
+          status: prog.isQuestComplete ? "COMPLETED" : "IN_PROGRESS",
+          lastActivityAt: new Date(),
+        },
+        select: {
+          id: true,
+          userId: true,
+          status: true,
+          currentGame: true,
+          currentLevel: true,
+          currentStage: true,
+          warmUpSubmission: { select: { id: true } },
+          levelAttempts: {
+            orderBy: [{ startedAt: "asc" }, { attemptNumber: "asc" }],
+            select: {
+              id: true,
+              gameId: true,
+              gameKey: true,
+              levelNumber: true,
+              attemptNumber: true,
+              status: true,
+              metrics: true,
+              startedAt: true,
+            },
+          },
+        },
+      });
+    }
 
-  // Find existing in-progress attempt or create a new attempt
-  let attempt = await prisma.levelAttempt.findFirst({
-    where: {
-      questSessionId: sessionId,
-      gameKey,
-      levelNumber,
-      status: "IN_PROGRESS",
-    },
-    orderBy: { attemptNumber: "desc" },
-  });
+    const authorizedOverallIndex =
+      (currentSession.currentGame - 1) * 3 + currentSession.currentLevel;
 
-  if (!attempt) {
-    const existingCount = await prisma.levelAttempt.count({
-      where: {
-        questSessionId: sessionId,
+    // Reject skipping forward beyond authorized stage
+    if (requestedOverallIndex > authorizedOverallIndex) {
+      throw new ForbiddenError(
+        `Level progression violation: Game ${requestedGameId} Level ${levelNumber} is locked. You are on Game ${currentSession.currentGame} Level ${currentSession.currentLevel}.`
+      );
+    }
+
+    const existingLevelAttempts = session.levelAttempts.filter(
+      (a) => a.gameKey === gameKey && a.levelNumber === levelNumber
+    );
+
+    // 2. If client supplied an idempotencyKey, return the exact attempt matching it
+    if (idempotencyKey) {
+      const matchByKey = existingLevelAttempts.find(
+        (a) => (a.metrics as any)?.idempotencyKey === idempotencyKey
+      );
+      if (matchByKey) {
+        return {
+          attemptId: matchByKey.id,
+          sessionId: session.id,
+          gameKey,
+          levelNumber,
+          status: matchByKey.status,
+          attemptNumber: matchByKey.attemptNumber,
+        };
+      }
+    }
+
+    // 3. Return existing active IN_PROGRESS attempt if one already exists
+    const activeAttempt = existingLevelAttempts.find(
+      (a) => a.status === "IN_PROGRESS"
+    );
+
+    if (activeAttempt) {
+      if (idempotencyKey && !(activeAttempt.metrics as any)?.idempotencyKey) {
+        await tx.levelAttempt.update({
+          where: { id: activeAttempt.id },
+          data: {
+            metrics: {
+              ...((activeAttempt.metrics as Record<string, any>) || {}),
+              idempotencyKey,
+            },
+          },
+        });
+      }
+
+      return {
+        attemptId: activeAttempt.id,
+        sessionId: session.id,
         gameKey,
         levelNumber,
-      },
-    });
+        status: activeAttempt.status,
+        attemptNumber: activeAttempt.attemptNumber,
+      };
+    }
 
-    attempt = await prisma.levelAttempt.create({
+    // 4. Completed level handling:
+    // If level is already completed in this session and NOT an intentional replay, return completed attempt
+    const completedAttempt = [...existingLevelAttempts]
+      .reverse()
+      .find((a) => a.status === "COMPLETED");
+
+    if (completedAttempt && !isReplay) {
+      return {
+        attemptId: completedAttempt.id,
+        sessionId: session.id,
+        gameKey,
+        levelNumber,
+        status: completedAttempt.status,
+        attemptNumber: completedAttempt.attemptNumber,
+      };
+    }
+
+    // 5. Create new attempt (initial entry or intentional replay)
+    const nextAttemptNumber =
+      existingLevelAttempts.length > 0
+        ? Math.max(...existingLevelAttempts.map((a) => a.attemptNumber)) + 1
+        : 1;
+
+    const initialMetrics: Record<string, any> = {};
+    if (idempotencyKey) {
+      initialMetrics.idempotencyKey = idempotencyKey;
+    }
+    if (isReplay) {
+      initialMetrics.isReplay = true;
+    }
+
+    const created = await tx.levelAttempt.create({
       data: {
         questSessionId: sessionId,
         userId,
         gameId: requestedGameId,
         gameKey,
         levelNumber,
-        attemptNumber: existingCount + 1,
+        attemptNumber: nextAttemptNumber,
         status: "IN_PROGRESS",
+        metrics: initialMetrics,
       },
     });
-  }
 
-  return {
-    attemptId: attempt.id,
-    sessionId: session.id,
-    gameKey,
-    levelNumber,
-    status: attempt.status,
-    attemptNumber: attempt.attemptNumber,
-  };
+    return {
+      attemptId: created.id,
+      sessionId: session.id,
+      gameKey,
+      levelNumber,
+      status: created.status,
+      attemptNumber: created.attemptNumber,
+    };
+  });
 }
 
 export async function completeLevelAttempt(
@@ -660,6 +763,18 @@ export async function completeLevelAttempt(
             },
           });
         }
+
+        // Clean up / abandon any duplicate IN_PROGRESS attempts for this level
+        await tx.levelAttempt.updateMany({
+          where: {
+            questSessionId: sessionId,
+            gameKey: input.gameKey,
+            levelNumber: input.levelNumber,
+            status: "IN_PROGRESS",
+            id: { not: activeAttempt?.id || existingCompleted.id },
+          },
+          data: { status: "ABANDONED" },
+        });
 
         // Reconcile session if it had not yet advanced to the next level
         let nextGame = currentSession.currentGame;
@@ -830,6 +945,29 @@ export async function completeLevelAttempt(
           },
         });
         finalAttemptId = created.id;
+      }
+
+      // Mark any other IN_PROGRESS attempt for this level as ABANDONED
+      await tx.levelAttempt.updateMany({
+        where: {
+          questSessionId: sessionId,
+          gameKey: input.gameKey,
+          levelNumber: input.levelNumber,
+          status: "IN_PROGRESS",
+          id: { not: finalAttemptId },
+        },
+        data: { status: "ABANDONED" },
+      });
+
+      // If quest finished, mark ALL remaining IN_PROGRESS attempts in this session as ABANDONED
+      if (isQuestFinished) {
+        await tx.levelAttempt.updateMany({
+          where: {
+            questSessionId: sessionId,
+            status: "IN_PROGRESS",
+          },
+          data: { status: "ABANDONED" },
+        });
       }
 
       return {

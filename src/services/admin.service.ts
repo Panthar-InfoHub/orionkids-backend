@@ -601,8 +601,11 @@ export async function getUserQuestSessionDetail(
           levelNumber: true,
           attemptNumber: true,
           status: true,
+          totalTrials: true,
           accuracy: true,
           durationMs: true,
+          metrics: true,
+          trialRecords: true,
           completedAt: true,
           startedAt: true,
         },
@@ -666,30 +669,50 @@ export async function getUserQuestSessionDetail(
       let levelStatus: "COMPLETED" | "IN_PROGRESS" | "LOCKED" = "LOCKED";
       if (isCompleted) {
         levelStatus = "COMPLETED";
-      } else if (inProgressAttempt || isAuthorizedStage) {
+      } else if (
+        (inProgressAttempt || isAuthorizedStage) &&
+        session.status === "IN_PROGRESS" &&
+        !prog.isQuestComplete
+      ) {
         levelStatus = "IN_PROGRESS";
       }
 
-      // Calculate best metrics
-      const accuracies = levelAttempts
+      // Calculate best metrics strictly from valid completed attempts
+      const completedAttemptsForLevel = levelAttempts.filter(
+        (a) => a.status === "COMPLETED"
+      );
+      const accuracies = completedAttemptsForLevel
         .map((a) => a.accuracy)
         .filter((acc): acc is number => typeof acc === "number");
       const bestAccuracy = accuracies.length > 0 ? Math.max(...accuracies) : null;
 
-      const completedDurations = levelAttempts
-        .filter((a) => a.status === "COMPLETED" && typeof a.durationMs === "number")
+      const completedDurations = completedAttemptsForLevel
+        .filter((a) => typeof a.durationMs === "number")
         .map((a) => a.durationMs as number);
       const bestDurationMs =
         completedDurations.length > 0 ? Math.min(...completedDurations) : null;
 
+      // Exclude technical duplicate attempts from total attempts count
+      const isTechnicalDuplicate = (a: (typeof levelAttempts)[0]) => {
+        if ((a.metrics as any)?.technicalDuplicate) return true;
+        if (!isCompleted) return false;
+        if (a.status === "COMPLETED") return false;
+        const noTrials = !a.totalTrials || a.totalTrials === 0;
+        const noAccuracy = a.accuracy === null;
+        const noDuration = !a.durationMs || a.durationMs === 0;
+        const noCheckpoint = !(a.metrics as any)?.checkpoint;
+        return noTrials && noAccuracy && noDuration && noCheckpoint;
+      };
+      const genuineAttempts = levelAttempts.filter((a) => !isTechnicalDuplicate(a));
+
       return {
         levelNumber,
         status: levelStatus,
-        totalAttempts: levelAttempts.length,
+        totalAttempts: genuineAttempts.length,
         bestAccuracy,
         bestDurationMs,
         completedAt: completedAttempt?.completedAt || null,
-        latestAttemptId: levelAttempts[levelAttempts.length - 1]?.id || null,
+        latestAttemptId: genuineAttempts[genuineAttempts.length - 1]?.id || null,
       };
     });
 
@@ -783,7 +806,7 @@ export async function getUserSessionAttempts(
   const [session, [attempts, total]] = await Promise.all([
     prisma.questSession.findUnique({
       where: { id: sessionId },
-      select: { id: true, userId: true },
+      select: { id: true, userId: true, status: true },
     }),
     Promise.all([
       prisma.levelAttempt.findMany({
@@ -825,8 +848,51 @@ export async function getUserSessionAttempts(
     );
   }
 
+  const completedAttempts = await prisma.levelAttempt.findMany({
+    where: { questSessionId: sessionId, status: "COMPLETED" },
+    select: { gameKey: true, levelNumber: true },
+  });
+  const completedKeys = new Set(
+    completedAttempts.map((c) => `${c.gameKey}-${c.levelNumber}`)
+  );
+
+  const formattedAttempts = attempts.map((a) => {
+    let status = a.status;
+    if (a.status === "IN_PROGRESS") {
+      if (
+        session.status === "COMPLETED" ||
+        completedKeys.has(`${a.gameKey}-${a.levelNumber}`)
+      ) {
+        status = "ABANDONED" as const;
+      }
+    }
+
+    const hasCompletedForLevel = completedKeys.has(`${a.gameKey}-${a.levelNumber}`);
+    const noTrials = !a.totalTrials || a.totalTrials === 0;
+    const noAccuracy = a.accuracy === null;
+    const noDuration = !a.durationMs || a.durationMs === 0;
+    const noCheckpoint = !(a.metrics as any)?.checkpoint;
+    const noRecords = !(a.trialRecords as any)?.length;
+
+    const isTechnicalDuplicate =
+      Boolean((a.metrics as any)?.technicalDuplicate) ||
+      (hasCompletedForLevel &&
+        status !== "COMPLETED" &&
+        noTrials &&
+        noAccuracy &&
+        noDuration &&
+        noCheckpoint &&
+        noRecords);
+
+    return {
+      ...a,
+      status,
+      isTechnicalDuplicate,
+    };
+  });
+
   return {
-    attempts,
+    attempts: formattedAttempts,
     meta: {
       page: query.page,
       limit: query.limit,
