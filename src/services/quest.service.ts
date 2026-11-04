@@ -887,10 +887,10 @@ export async function completeLevelAttempt(
         });
 
         // Reconcile session if it had not yet advanced to the next level
-        let nextGame = currentSession.currentGame;
-        let nextLevel = currentSession.currentLevel;
-        let nextStage = currentSession.currentStage;
-        let isQuestFinished = false;
+        let nextGame = prog.currentGame;
+        let nextLevel = prog.currentLevel;
+        let nextStage = prog.currentStage;
+        let isQuestFinished: boolean = prog.isQuestComplete;
 
         if (requestedIndex >= prog.authorizedIndex) {
           const newHighest = Math.max(

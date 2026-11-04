@@ -62,12 +62,12 @@ export const completeLevelSchema = z
     levelNumber: z.number().int().min(1).max(3),
     attemptNumber: z.number().int().positive().optional().default(1),
     totalTrials: z
-      .number({ required_error: "totalTrials is required and must be positive" })
+      .number({ message: "totalTrials is required and must be positive" })
       .int("totalTrials must be an integer")
       .positive("totalTrials must be greater than 0")
       .max(100),
     correctTrials: z
-      .number({ required_error: "correctTrials is required" })
+      .number({ message: "correctTrials is required" })
       .int("correctTrials must be an integer")
       .nonnegative("correctTrials cannot be negative")
       .max(100),
