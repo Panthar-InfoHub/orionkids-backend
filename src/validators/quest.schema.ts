@@ -38,6 +38,15 @@ export const warmUpAnswersSchema = z.object({
     .default(() => new Date().toISOString()),
 });
 
+export const legacyWarmUpSubmitSchema = z.object({
+  answers: z.record(z.string().or(z.number()), z.string().min(1)).optional().default({}),
+  sessionId: z.string().trim().min(1).optional(),
+  childProfileId: z.string().trim().min(1).optional(),
+  completedAt: z.string().datetime().optional(),
+});
+
+export type LegacyWarmUpSubmitInput = z.infer<typeof legacyWarmUpSubmitSchema>;
+
 export const startLevelSchema = z.object({
   gameKey: gameKeysEnum,
   levelNumber: z.number().int().min(1).max(3),
@@ -52,8 +61,16 @@ export const completeLevelSchema = z
     gameKey: gameKeysEnum,
     levelNumber: z.number().int().min(1).max(3),
     attemptNumber: z.number().int().positive().optional().default(1),
-    totalTrials: z.number().int().nonnegative().max(100).optional(),
-    correctTrials: z.number().int().nonnegative().max(100).optional(),
+    totalTrials: z
+      .number({ required_error: "totalTrials is required and must be positive" })
+      .int("totalTrials must be an integer")
+      .positive("totalTrials must be greater than 0")
+      .max(100),
+    correctTrials: z
+      .number({ required_error: "correctTrials is required" })
+      .int("correctTrials must be an integer")
+      .nonnegative("correctTrials cannot be negative")
+      .max(100),
     accuracy: z.number().min(0).max(100).finite().optional(),
     durationMs: z.number().int().nonnegative().optional(),
     averageReactionTimeMs: z.number().int().nonnegative().optional(),
@@ -66,15 +83,7 @@ export const completeLevelSchema = z
       .default(() => new Date().toISOString()),
   })
   .refine(
-    (data) => {
-      if (
-        typeof data.totalTrials === "number" &&
-        typeof data.correctTrials === "number"
-      ) {
-        return data.correctTrials <= data.totalTrials;
-      }
-      return true;
-    },
+    (data) => data.correctTrials <= data.totalTrials,
     {
       message: "correctTrials cannot exceed totalTrials",
       path: ["correctTrials"],
@@ -87,13 +96,14 @@ export const legacyStroopSubmitSchema = z
   .object({
     level: z.coerce.number().int().min(1).max(3),
     sessionId: z.string().trim().min(1).optional(),
+    childProfileId: z.string().trim().min(1).optional(),
     totalTrials: z.coerce
       .number()
       .int()
       .positive("totalTrials must be greater than 0")
       .max(100),
     correctTrials: z.coerce.number().int().nonnegative().max(100),
-    accuracy: z.coerce.number().min(0).max(100).finite(),
+    accuracy: z.coerce.number().min(0).max(100).finite().optional(),
     durationMs: z.coerce.number().int().nonnegative().optional(),
     averageReactionTimeMs: z.coerce.number().int().nonnegative().optional(),
     trials: z
@@ -101,7 +111,7 @@ export const legacyStroopSubmitSchema = z
       .max(100)
       .optional()
       .default([]),
-    completedAt: z.string().optional(),
+    completedAt: z.string().datetime().optional(),
   })
   .refine(
     (data) => data.correctTrials <= data.totalTrials,
@@ -112,7 +122,6 @@ export const legacyStroopSubmitSchema = z
   );
 
 export type LegacyStroopSubmitInput = z.infer<typeof legacyStroopSubmitSchema>;
-
 
 export const saveCheckpointSchema = z.object({
   checkpoint: z.record(z.string(), z.any()),

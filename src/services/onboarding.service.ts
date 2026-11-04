@@ -1,5 +1,5 @@
 import { prisma } from "../lib/prisma.js";
-import { ForbiddenError } from "../utils/errors.js";
+import { ForbiddenError, NotFoundError } from "../utils/errors.js";
 import type { SubmitOnboardingInput } from "../validators/onboarding.schema.js";
 import { idempotencyRegistry } from "../utils/idempotency.js";
 
@@ -10,14 +10,14 @@ export async function submitUserOnboarding(
 ) {
   const effectiveIdempotencyKey = idempotencyKey || input.idempotencyKey;
   if (effectiveIdempotencyKey) {
-    const cached = idempotencyRegistry.get<{
+    const lock = await idempotencyRegistry.acquireLock<{
       user: any;
       childProfile: any;
       session: any;
       sessionId: string;
-    }>(userId, effectiveIdempotencyKey);
-    if (cached) {
-      return cached.result;
+    }>(userId, "onboarding", effectiveIdempotencyKey);
+    if (lock.isCached && lock.result) {
+      return lock.result;
     }
   }
 
@@ -27,7 +27,7 @@ export async function submitUserOnboarding(
   });
 
   if (!user) {
-    throw new ForbiddenError("User not found", "USER_NOT_FOUND");
+    throw new NotFoundError("User not found");
   }
 
   if (user.status === "RESTRICTED") {
@@ -90,7 +90,13 @@ export async function submitUserOnboarding(
   });
 
   if (effectiveIdempotencyKey) {
-    idempotencyRegistry.set(userId, effectiveIdempotencyKey, result, 200);
+    await idempotencyRegistry.saveResult(
+      userId,
+      "onboarding",
+      effectiveIdempotencyKey,
+      result,
+      200
+    );
   }
 
   return result;

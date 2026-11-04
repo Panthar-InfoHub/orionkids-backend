@@ -80,7 +80,9 @@ describe("Repeatable Child Onboarding, Independent Records & Parent Analytics", 
       where: { userId: { in: [parent1Id, parent2Id, adminId] } },
     });
     await prisma.warmUpSubmission.deleteMany({
-      where: { questSession: { userId: { in: [parent1Id, parent2Id, adminId] } } },
+      where: {
+        questSession: { userId: { in: [parent1Id, parent2Id, adminId] } },
+      },
     });
     await prisma.questReport.deleteMany({
       where: { userId: { in: [parent1Id, parent2Id, adminId] } },
@@ -265,7 +267,9 @@ describe("Repeatable Child Onboarding, Independent Records & Parent Analytics", 
     );
 
     // Clean up temporary rohan profile
-    await prisma.questSession.deleteMany({ where: { childProfileId: firstCall.id } });
+    await prisma.questSession.deleteMany({
+      where: { childProfileId: firstCall.id },
+    });
     await prisma.childProfile.delete({ where: { id: firstCall.id } });
   });
 
@@ -277,7 +281,7 @@ describe("Repeatable Child Onboarding, Independent Records & Parent Analytics", 
       2,
       "Must have 2 separate profiles for Aanya Sahu"
     );
-    assert.notEqual(aanyaProfiles[0].id, aanyaProfiles[1].id);
+    assert.notEqual(aanyaProfiles[0]!.id, aanyaProfiles[1]!.id);
   });
 
   it("10. Child 1 progression does NOT affect Child 2 progression", async () => {
@@ -315,8 +319,8 @@ describe("Repeatable Child Onboarding, Independent Records & Parent Analytics", 
     const p1Stroop = progress1.matrix.find((g) => g.key === "stroop");
     const p2Stroop = progress2.matrix.find((g) => g.key === "stroop");
 
-    assert.equal(p1Stroop?.levels[0].status, "COMPLETED");
-    assert.equal(p2Stroop?.levels[0].status, "LOCKED");
+    assert.equal(p1Stroop?.levels[0]?.status, "COMPLETED");
+    assert.equal(p2Stroop?.levels[0]?.status, "LOCKED");
   });
 
   it("12. A parent cannot access another parent's child profiles (IDOR prevention)", async () => {
@@ -358,7 +362,7 @@ describe("Repeatable Child Onboarding, Independent Records & Parent Analytics", 
     const aanyas = adminChildren.filter((c) => c.childName === "Aanya Sahu");
 
     assert.equal(aanyas.length, 2);
-    assert.notEqual(aanyas[0].id, aanyas[1].id);
+    assert.notEqual(aanyas[0]!.id, aanyas[1]!.id);
 
     // One Aanya has 1 completed level, the other has 0
     const aanya1 = aanyas.find((a) => a.id === child1Id);

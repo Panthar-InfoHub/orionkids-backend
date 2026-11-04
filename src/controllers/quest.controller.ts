@@ -1,8 +1,9 @@
 import type { Request, Response } from "express";
-import { UnauthorizedError } from "../utils/errors.js";
+import { UnauthorizedError, ValidationError } from "../utils/errors.js";
 import { sendSuccess } from "../utils/apiResponse.js";
 import {
   warmUpAnswersSchema,
+  legacyWarmUpSubmitSchema,
   startLevelSchema,
   completeLevelSchema,
   legacyStroopSubmitSchema,
@@ -35,7 +36,7 @@ function getParamString(
   name: string
 ): string {
   if (!param || Array.isArray(param)) {
-    throw new UnauthorizedError(`Missing or invalid ${name}`, "INVALID_PARAM");
+    throw new ValidationError(`Missing or invalid ${name}`, "INVALID_PARAM");
   }
   return param;
 }
@@ -96,7 +97,8 @@ export async function startLevelController(req: Request, res: Response) {
   const sessionId = getParamString(req.params.sessionId, "sessionId");
   const validated = startLevelSchema.parse(req.body);
 
-  const rawHeaderKey = req.headers["x-idempotency-key"] || req.headers["idempotency-key"];
+  const rawHeaderKey =
+    req.headers["x-idempotency-key"] || req.headers["idempotency-key"];
   const idempotencyKey =
     validated.idempotencyKey ||
     (typeof rawHeaderKey === "string" ? rawHeaderKey : undefined);
@@ -152,7 +154,12 @@ export async function generateReportController(req: Request, res: Response) {
   const force = req.query.force === "true";
 
   const report = await generateOrGetReport(userId, sessionId, force, false);
-  sendSuccess(res, 200, report, "Cognitive assessment report generated successfully");
+  sendSuccess(
+    res,
+    200,
+    report,
+    "Cognitive assessment report generated successfully"
+  );
 }
 
 export async function downloadReportPdfController(req: Request, res: Response) {
@@ -176,16 +183,14 @@ export async function legacyWarmUpSubmitController(
   res: Response
 ) {
   const userId = getUserId(req);
-  const rawAnswers = req.body.answers || {};
-  const completedAt = req.body.completedAt;
-  const rawSessionId =
-    typeof req.body.sessionId === "string" ? req.body.sessionId : undefined;
+  const validated = legacyWarmUpSubmitSchema.parse(req.body);
 
   const result = await saveWarmUpSubmission(
     userId,
-    rawSessionId,
-    rawAnswers,
-    completedAt
+    validated.sessionId,
+    validated.answers,
+    validated.completedAt,
+    validated.childProfileId
   );
 
   sendSuccess(res, 200, result, "Warm-up answers saved successfully");
@@ -207,7 +212,8 @@ export async function legacyStroopLevelSubmitController(
   const validated = legacyStroopSubmitSchema.parse(req.body);
 
   const sessionId =
-    validated.sessionId || (await getOrCreateActiveSession(userId)).id;
+    validated.sessionId ||
+    (await getOrCreateActiveSession(userId, validated.childProfileId)).id;
 
   const result = await completeLevelAttempt(userId, sessionId, {
     gameKey: "stroop",

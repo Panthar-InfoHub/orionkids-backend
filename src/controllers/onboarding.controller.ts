@@ -22,10 +22,5 @@ export async function submitOnboardingController(req: Request, res: Response) {
     idempotencyKey
   );
 
-  sendSuccess(
-    res,
-    200,
-    result,
-    "Onboarding submitted successfully"
-  );
+  sendSuccess(res, 200, result, "Onboarding submitted successfully");
 }

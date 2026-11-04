@@ -32,9 +32,26 @@ function normalizeError(err: unknown): AppError {
     switch (err.code) {
       case "P2002": // unique constraint violation
         return new ConflictError("A record with this value already exists");
+      case "P2003": // foreign key constraint violation
+        return new ConflictError(
+          "Referenced record does not exist or has dependent relations",
+          "FOREIGN_KEY_VIOLATION"
+        );
+      case "P2023": // inconsistent column data / malformed ID
+        return new ValidationError(
+          "Inconsistent or malformed identifier provided",
+          "MALFORMED_IDENTIFIER"
+        );
       case "P2025": // record to update/delete not found
         return new NotFoundError("Record not found");
     }
+  }
+
+  if (err instanceof Prisma.PrismaClientValidationError) {
+    return new ValidationError(
+      "Database query validation failed",
+      "PRISMA_VALIDATION_ERROR"
+    );
   }
 
   // 4. express.json() errors: malformed JSON or an oversized body.

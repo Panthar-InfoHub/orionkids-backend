@@ -7,7 +7,11 @@ export default defineConfig({
     path: "prisma/migrations",
   },
   datasource: {
-    // CLI commands (migrate, studio) use the DIRECT (non-pooled) connection.
-    url: process.env.DIRECT_URL!,
+    // In test environment, target the isolated local test database.
+    // In production/development, CLI commands use the direct connection.
+    url:
+      process.env.NODE_ENV === "test" && process.env.DATABASE_URL_TEST
+        ? process.env.DATABASE_URL_TEST
+        : (process.env.DIRECT_URL || process.env.DATABASE_URL)!,
   },
 });

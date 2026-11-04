@@ -1,4 +1,4 @@
-import { prisma } from "../lib/prisma.js";
+import { prisma, type Prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { ForbiddenError, NotFoundError } from "../utils/errors.js";
 import type {
@@ -14,15 +14,12 @@ import {
   getReportPdfBuffer,
 } from "./quest.service.js";
 import type { ListAccessRequestsQuery } from "../validators/registration.schema.js";
-
-export const CANONICAL_GAMES = [
-  { gameId: 1, gameKey: "stroop", name: "Stroop Colour-Word" },
-  { gameId: 2, gameKey: "card-flip", name: "Card Flip Memory" },
-  { gameId: 3, gameKey: "pattern", name: "Pattern Recognition" },
-  { gameId: 4, gameKey: "odd-one-out", name: "Odd One Out" },
-  { gameId: 5, gameKey: "rule-discovery", name: "Rule Discovery" },
-  { gameId: 6, gameKey: "story-sequencing", name: "Story Sequencing" },
-] as const;
+import {
+  CANONICAL_GAMES,
+  TOTAL_GAMES,
+  LEVELS_PER_GAME,
+  TOTAL_LEVELS,
+} from "../config/games.js";
 
 /**
  * High-level administrative overview and aggregate system metrics.
@@ -46,7 +43,6 @@ export async function getAdminOverview() {
     prisma.user.count({
       where: {
         status: "PENDING",
-        onboardingSubmittedAt: { not: null },
       },
     }),
     prisma.childProfile.count(),
@@ -149,12 +145,9 @@ export async function getAdminOverview() {
  * Filtered, paginated list of registered users.
  */
 export async function listUsers(query: ListUsersQuery) {
-  const where: any = {};
+  const where: Prisma.UserWhereInput = {};
   if (query.status) {
     where.status = query.status;
-    if (query.status === "PENDING") {
-      where.onboardingSubmittedAt = { not: null };
-    }
   }
 
   if (query.role) {
@@ -416,12 +409,16 @@ export async function getUserChildren(userId: string) {
     const completed = sessions.filter((s) => s.status === "COMPLETED");
     const latest = sessions[0];
 
-    let sessionStatus: "IN_PROGRESS" | "COMPLETED" | "NOT_STARTED" | "ABANDONED" = "NOT_STARTED";
+    let sessionStatus:
+      "IN_PROGRESS" | "COMPLETED" | "NOT_STARTED" | "ABANDONED" = "NOT_STARTED";
     let completedLevels = 0;
 
     if (inProgress) {
       sessionStatus = "IN_PROGRESS";
-      const prog = computeSessionProgression(inProgress, inProgress.levelAttempts);
+      const prog = computeSessionProgression(
+        inProgress,
+        inProgress.levelAttempts
+      );
       completedLevels = prog.highestCompletedIndex;
     } else if (completed.length > 0) {
       sessionStatus = "COMPLETED";
@@ -449,7 +446,8 @@ export async function getUserChildren(userId: string) {
       completedLevels,
       latestActivityAt: latest?.lastActivityAt || c.updatedAt,
       hasReport: sessions.some((s) => Boolean(s.questReport)),
-      reportId: sessions.find((s) => Boolean(s.questReport))?.questReport?.id || null,
+      reportId:
+        sessions.find((s) => Boolean(s.questReport))?.questReport?.id || null,
       sessions: sessions.map((s) => ({
         id: s.id,
         status: s.status,
@@ -471,7 +469,7 @@ export async function getUserQuestSessions(
   userId: string,
   query: ListQuestSessionsQuery
 ) {
-  const where: any = { userId };
+  const where: Prisma.QuestSessionWhereInput = { userId };
   if (query.status) {
     where.status = query.status;
   }
@@ -635,7 +633,10 @@ export async function getUserQuestSessionDetail(
   const prog = computeSessionProgression(session, completedAttempts);
 
   // Group attempts by gameKey & levelNumber
-  const attemptsByGameAndLevel = new Map<string, typeof session.levelAttempts>();
+  const attemptsByGameAndLevel = new Map<
+    string,
+    typeof session.levelAttempts
+  >();
   for (const attempt of session.levelAttempts) {
     const key = `${attempt.gameKey}-${attempt.levelNumber}`;
     if (!attemptsByGameAndLevel.has(key)) {
@@ -689,7 +690,8 @@ export async function getUserQuestSessionDetail(
       const accuracies = completedAttemptsForLevel
         .map((a) => a.accuracy)
         .filter((acc): acc is number => typeof acc === "number");
-      const bestAccuracy = accuracies.length > 0 ? Math.max(...accuracies) : null;
+      const bestAccuracy =
+        accuracies.length > 0 ? Math.max(...accuracies) : null;
 
       const completedDurations = completedAttemptsForLevel
         .filter((a) => typeof a.durationMs === "number")
@@ -708,7 +710,9 @@ export async function getUserQuestSessionDetail(
         const noCheckpoint = !(a.metrics as any)?.checkpoint;
         return noTrials && noAccuracy && noDuration && noCheckpoint;
       };
-      const genuineAttempts = levelAttempts.filter((a) => !isTechnicalDuplicate(a));
+      const genuineAttempts = levelAttempts.filter(
+        (a) => !isTechnicalDuplicate(a)
+      );
 
       return {
         levelNumber,
@@ -717,7 +721,8 @@ export async function getUserQuestSessionDetail(
         bestAccuracy,
         bestDurationMs,
         completedAt: completedAttempt?.completedAt || null,
-        latestAttemptId: genuineAttempts[genuineAttempts.length - 1]?.id || null,
+        latestAttemptId:
+          genuineAttempts[genuineAttempts.length - 1]?.id || null,
       };
     });
 
@@ -794,7 +799,7 @@ export async function getUserSessionAttempts(
   sessionId: string,
   query: ListLevelAttemptsQuery
 ) {
-  const where: any = { questSessionId: sessionId };
+  const where: Prisma.LevelAttemptWhereInput = { questSessionId: sessionId };
   if (query.gameKey) {
     where.gameKey = query.gameKey;
   }
@@ -872,7 +877,9 @@ export async function getUserSessionAttempts(
       }
     }
 
-    const hasCompletedForLevel = completedKeys.has(`${a.gameKey}-${a.levelNumber}`);
+    const hasCompletedForLevel = completedKeys.has(
+      `${a.gameKey}-${a.levelNumber}`
+    );
     const noTrials = !a.totalTrials || a.totalTrials === 0;
     const noAccuracy = a.accuracy === null;
     const noDuration = !a.durationMs || a.durationMs === 0;
@@ -911,10 +918,7 @@ export async function getUserSessionAttempts(
  * Retrieve the saved report for a session in a strictly read-only manner.
  * Never silently fabricates reports or mutates records.
  */
-export async function getUserSessionReport(
-  userId: string,
-  sessionId: string
-) {
+export async function getUserSessionReport(userId: string, sessionId: string) {
   const session = await prisma.questSession.findUnique({
     where: { id: sessionId },
     select: {
@@ -957,7 +961,8 @@ export async function getUserSessionReport(
   return {
     hasReport: false,
     reason: "NOT_YET_GENERATED",
-    message: "Quest is completed, but final assessment report has not yet been generated.",
+    message:
+      "Quest is completed, but final assessment report has not yet been generated.",
     report: null,
   };
 }
@@ -978,6 +983,22 @@ export async function setUserStatus(
   }
 
   const updatedUser = await prisma.$transaction(async (tx) => {
+    const targetUser = await tx.user.findUnique({
+      where: { id: targetUserId },
+      select: { id: true, role: true, status: true },
+    });
+
+    if (!targetUser) {
+      throw new NotFoundError("User not found");
+    }
+
+    if (targetUser.role === "ADMIN") {
+      throw new ForbiddenError(
+        "Cannot change the account status of another administrator",
+        "FORBIDDEN"
+      );
+    }
+
     const user = await tx.user.update({
       where: { id: targetUserId },
       data: {
@@ -1002,6 +1023,20 @@ export async function setUserStatus(
       },
     });
 
+    if (input.status === "ACTIVE") {
+      await tx.accessRequest.updateMany({
+        where: {
+          userId: targetUserId,
+          status: "PENDING",
+        },
+        data: {
+          status: "APPROVED",
+          reviewedById: adminId,
+          reviewedAt: new Date(),
+        },
+      });
+    }
+
     if (input.status === "RESTRICTED") {
       await tx.session.deleteMany({
         where: { userId: targetUserId },
@@ -1022,7 +1057,10 @@ export async function setUserStatus(
 /**
  * Retrieve comprehensive details for a single child profile scoped to a parent.
  */
-export async function getUserChildDetail(userId: string, childProfileId: string) {
+export async function getUserChildDetail(
+  userId: string,
+  childProfileId: string
+) {
   const child = await prisma.childProfile.findUnique({
     where: { id: childProfileId },
     include: {
@@ -1066,17 +1104,22 @@ export async function getUserChildDetail(userId: string, childProfileId: string)
   }
 
   const sessions = child.questSessions || [];
-  const inProgress = sessions.find((s) => s.status === "IN_PROGRESS");
+  const inProgressList = sessions.filter((s) => s.status === "IN_PROGRESS");
+  const inProgress = inProgressList[0];
   const completed = sessions.filter((s) => s.status === "COMPLETED");
   const abandoned = sessions.filter((s) => s.status === "ABANDONED");
   const latest = sessions[0];
 
-  let sessionStatus: "IN_PROGRESS" | "COMPLETED" | "NOT_STARTED" | "ABANDONED" = "NOT_STARTED";
+  let sessionStatus: "IN_PROGRESS" | "COMPLETED" | "NOT_STARTED" | "ABANDONED" =
+    "NOT_STARTED";
   let completedLevels = 0;
 
   if (inProgress) {
     sessionStatus = "IN_PROGRESS";
-    const prog = computeSessionProgression(inProgress, inProgress.levelAttempts);
+    const prog = computeSessionProgression(
+      inProgress,
+      inProgress.levelAttempts
+    );
     completedLevels = prog.highestCompletedIndex;
   } else if (completed.length > 0) {
     sessionStatus = "COMPLETED";
@@ -1103,13 +1146,14 @@ export async function getUserChildDetail(userId: string, childProfileId: string)
     stats: {
       totalSessions: sessions.length,
       completedSessions: completed.length,
-      inProgressSessions: inProgress ? 1 : 0,
+      inProgressSessions: inProgressList.length,
       abandonedSessions: abandoned.length,
       completedLevels,
       sessionStatus,
       latestActivityAt: latest?.lastActivityAt || child.updatedAt,
       hasReport: sessions.some((s) => Boolean(s.questReport)),
-      reportId: sessions.find((s) => Boolean(s.questReport))?.questReport?.id || null,
+      reportId:
+        sessions.find((s) => Boolean(s.questReport))?.questReport?.id || null,
     },
   };
 }
@@ -1123,7 +1167,7 @@ export async function getUserChildQuestSessions(
   childProfileId: string,
   query: ListQuestSessionsQuery
 ) {
-  const where: any = {
+  const where: Prisma.QuestSessionWhereInput = {
     userId,
     childProfileId,
   };
@@ -1400,7 +1444,7 @@ export async function listAccessRequests(query: ListAccessRequestsQuery) {
   const { page, limit, status, search } = query;
   const skip = (page - 1) * limit;
 
-  const where: any = {};
+  const where: Prisma.AccessRequestWhereInput = {};
 
   if (status && status !== "ALL") {
     where.status = status;
@@ -1552,6 +1596,13 @@ export async function rejectAccessRequest(
     );
   }
 
+  if (request.status !== "PENDING") {
+    throw new ForbiddenError(
+      `Access request is already ${request.status.toLowerCase()}`,
+      "REQUEST_ALREADY_REVIEWED"
+    );
+  }
+
   const result = await prisma.$transaction(async (tx) => {
     const updatedRequest = await tx.accessRequest.update({
       where: { id: requestId },
@@ -1611,14 +1662,21 @@ export async function adminRegenerateReport(sessionId: string) {
     );
   }
 
-  const report = await generateOrGetReport(session.userId, sessionId, true, true);
+  const report = await generateOrGetReport(
+    session.userId,
+    sessionId,
+    true,
+    true
+  );
   return report;
 }
 
 /**
  * Admin operation to download the PDF for any child's completed quest report.
  */
-export async function adminGetReportPdf(sessionId: string): Promise<Uint8Array> {
+export async function adminGetReportPdf(
+  sessionId: string
+): Promise<Uint8Array> {
   return await getReportPdfBuffer("", sessionId, true);
 }
 
@@ -1630,7 +1688,7 @@ export async function listAllQuestReports(query: ListReportsQuery) {
   const limit = Math.min(50, Math.max(1, query.limit || 10));
   const skip = (page - 1) * limit;
 
-  const where: any = {};
+  const where: Prisma.QuestReportWhereInput = {};
 
   if (query.status) {
     where.status = query.status;

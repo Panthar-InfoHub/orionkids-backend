@@ -1,8 +1,9 @@
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import { pinoHttp } from "pino-http";
-import { env } from "./config/env.js";
+import { env, isTest } from "./config/env.js";
 import { logger } from "./lib/logger.js";
 import { prisma } from "./lib/prisma.js";
 import { toNodeHandler } from "better-auth/node";
@@ -17,7 +18,10 @@ const app = express();
 
 // Needed behind a reverse proxy / load balancer (Render, Railway, Cloud Run…)
 // so req.ip and secure cookies work.
-app.set("trust proxy", 1);
+app.set(
+  "trust proxy",
+  env.TRUST_PROXY ? Number(env.TRUST_PROXY) || env.TRUST_PROXY : 1
+);
 
 // ---- Security ----
 app.use(helmet());
@@ -33,19 +37,24 @@ app.all("/api/auth/*splat", toNodeHandler(auth));
 
 // ---- Body parsing ----
 app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: true }));
 
 // ---- Request logging (one line per request) ----
 app.use(
   pinoHttp({
     logger,
-    autoLogging: { ignore: (req) => req.url === "/health" },
+    autoLogging: { ignore: (req) => req.url?.startsWith("/health") || false },
   })
 );
 
-// ---- Health check: confirms the server AND the database are up ----
+// ---- Health checks ----
+// Liveness check: lightweight process ping (no DB hit)
+app.get("/health/live", (_req, res) => {
+  sendSuccess(res, 200, { status: "live", uptime: process.uptime() });
+});
+
+// Readiness check: confirms database connectivity
 app.get(
-  "/health",
+  ["/health/ready", "/health"],
   asyncHandler(async (_req, res) => {
     await prisma.$queryRaw`SELECT 1`;
     sendSuccess(res, 200, {
@@ -56,9 +65,25 @@ app.get(
   })
 );
 
+// ---- Rate Limiting (Issue #18) ----
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: isTest ? 50_000 : 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: {
+      code: "TOO_MANY_REQUESTS",
+      message: "Too many requests, please try again later",
+    },
+  },
+  skip: () => isTest,
+});
+
 // ---- API routes ----
-app.use("/api", apiRoutes);
-app.use("/api/v1", apiRoutes);
+app.use("/api", apiLimiter, apiRoutes);
+app.use("/api/v1", apiLimiter, apiRoutes);
 
 // ---- 404, then the error handler: these two must stay LAST, in this order ----
 app.use(notFoundHandler);

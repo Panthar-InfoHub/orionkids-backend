@@ -15,8 +15,10 @@ export const createChildSchema = z.object({
   parentMobile: z
     .string()
     .trim()
-    .min(7, "Valid parent mobile is required")
-    .max(20),
+    .regex(
+      /^(\+?[0-9]{1,4}[\s-]?)?([0-9]{7,15})$/,
+      "Valid parent mobile phone number is required"
+    ),
   isGuardian: z.boolean().refine((val) => val === true, {
     message: "Parent or guardian consent is required",
   }),
@@ -30,7 +32,14 @@ export const updateChildSchema = z.object({
   school: z.string().trim().max(150).optional().nullable(),
   selectedClass: z.string().trim().min(1).optional(),
   studentId: z.string().trim().max(50).optional().nullable(),
-  parentMobile: z.string().trim().min(7).max(20).optional(),
+  parentMobile: z
+    .string()
+    .trim()
+    .regex(
+      /^(\+?[0-9]{1,4}[\s-]?)?([0-9]{7,15})$/,
+      "Valid parent mobile phone number is required"
+    )
+    .optional(),
 });
 
 export const childIdParamSchema = z.object({

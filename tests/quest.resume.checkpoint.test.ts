@@ -31,6 +31,20 @@ describe("Quest Resume State & Checkpoint Persistence Service", () => {
       },
     });
 
+    await prisma.childProfile.create({
+      data: {
+        userId: userIdA,
+        childName: "Resume Child A",
+        age: 8,
+        language: "English",
+        selectedClass: "Class 2",
+        school: "Orion Academy",
+        parentEmail: `${userIdA}@example.com`,
+        parentMobile: "9876543210",
+        isGuardian: true,
+      },
+    });
+
     await prisma.user.create({
       data: {
         id: userIdB,
@@ -38,6 +52,20 @@ describe("Quest Resume State & Checkpoint Persistence Service", () => {
         email: `${userIdB}@example.com`,
         status: "ACTIVE",
         role: "USER",
+      },
+    });
+
+    await prisma.childProfile.create({
+      data: {
+        userId: userIdB,
+        childName: "Resume Child B",
+        age: 7,
+        language: "English",
+        selectedClass: "Class 1",
+        school: "Orion Academy",
+        parentEmail: `${userIdB}@example.com`,
+        parentMobile: "9876543211",
+        isGuardian: true,
       },
     });
   });
@@ -150,7 +178,11 @@ describe("Quest Resume State & Checkpoint Persistence Service", () => {
     });
 
     const completedAttempt = await prisma.levelAttempt.findFirst({
-      where: { questSessionId: sessionAId, levelNumber: 1, status: "COMPLETED" },
+      where: {
+        questSessionId: sessionAId,
+        levelNumber: 1,
+        status: "COMPLETED",
+      },
     });
     assert.ok(completedAttempt);
 
@@ -175,7 +207,29 @@ describe("Quest Resume State & Checkpoint Persistence Service", () => {
   });
 
   it("8. handles multiple in-progress sessions deterministically and archives stale duplicates", async () => {
-    // Create an older duplicate in-progress session
+    // 1. Verify DB constraint strictly prevents duplicate in-progress session for Child A (Issue #22)
+    const childA = await prisma.childProfile.findFirst({
+      where: { userId: userIdA },
+    });
+    await assert.rejects(
+      async () =>
+        prisma.questSession.create({
+          data: {
+            userId: userIdA,
+            childProfileId: childA?.id,
+            status: "IN_PROGRESS",
+            currentStage: "WARM_UP",
+            currentGame: 1,
+            currentLevel: 1,
+          },
+        }),
+      (err: any) => {
+        assert.equal(err?.code, "P2002");
+        return true;
+      }
+    );
+
+    // 2. Create an older legacy in-progress session without childProfileId
     const staleSession = await prisma.questSession.create({
       data: {
         userId: userIdA,

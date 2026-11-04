@@ -18,7 +18,12 @@ export const requireAuth: RequestHandler = asyncHandler(
     // Better Auth includes custom additionalFields (role, status) directly on session.user.
     // Reusing these skips a redundant database round-trip on every authenticated request.
     const sessionUser = session.user as any;
-    if (sessionUser && sessionUser.id && sessionUser.role && sessionUser.status) {
+    if (
+      sessionUser &&
+      sessionUser.id &&
+      sessionUser.role &&
+      sessionUser.status
+    ) {
       req.authCtx = {
         userId: sessionUser.id,
         sessionId: session.session.id,

@@ -1,17 +1,18 @@
 import { prisma } from "../lib/prisma.js";
 import { ForbiddenError, NotFoundError } from "../utils/errors.js";
-import type { CreateChildInput, UpdateChildInput } from "../validators/child.schema.js";
+import type {
+  CreateChildInput,
+  UpdateChildInput,
+} from "../validators/child.schema.js";
 import { computeSessionProgression } from "./quest.service.js";
 import { idempotencyRegistry } from "../utils/idempotency.js";
-
-const CANONICAL_GAMES = [
-  { id: 1, key: "stroop", title: "Stroop Colour-Word", totalLevels: 3 },
-  { id: 2, key: "card-flip", title: "Cosmic Card Flip", totalLevels: 3 },
-  { id: 3, key: "pattern", title: "Pattern Recognition", totalLevels: 3 },
-  { id: 4, key: "odd-one-out", title: "Odd One Out", totalLevels: 3 },
-  { id: 5, key: "rule-discovery", title: "Rule Discovery", totalLevels: 3 },
-  { id: 6, key: "story-sequencing", title: "Story Sequencing", totalLevels: 3 },
-];
+import { assertChildOwnership } from "../utils/ownership.js";
+import {
+  CANONICAL_GAMES,
+  TOTAL_GAMES,
+  LEVELS_PER_GAME,
+  TOTAL_LEVELS,
+} from "../config/games.js";
 
 export async function createChildProfile(
   userId: string,
@@ -20,9 +21,13 @@ export async function createChildProfile(
 ) {
   const effectiveIdempotencyKey = idempotencyKey || input.idempotencyKey;
   if (effectiveIdempotencyKey) {
-    const cached = idempotencyRegistry.get<any>(userId, effectiveIdempotencyKey);
-    if (cached) {
-      return cached.result;
+    const lock = await idempotencyRegistry.acquireLock<any>(
+      userId,
+      "createChildProfile",
+      effectiveIdempotencyKey
+    );
+    if (lock.isCached && lock.result) {
+      return lock.result;
     }
   }
 
@@ -86,7 +91,13 @@ export async function createChildProfile(
   });
 
   if (effectiveIdempotencyKey) {
-    idempotencyRegistry.set(userId, effectiveIdempotencyKey, result, 201);
+    await idempotencyRegistry.saveResult(
+      userId,
+      "createChildProfile",
+      effectiveIdempotencyKey,
+      result,
+      201
+    );
   }
 
   return result;
@@ -144,7 +155,10 @@ export async function listChildren(userId: string) {
         currentStage = "COMPLETED";
         currentGame = 6;
         currentLevel = 3;
-      } else if (completedSessions.length > 0 && inProgressSession.levelAttempts.length === 0) {
+      } else if (
+        completedSessions.length > 0 &&
+        inProgressSession.levelAttempts.length === 0
+      ) {
         hasInProgress = false;
         completedLevelsCount = 18;
         progressOverall = 100;
@@ -260,7 +274,10 @@ export async function getChildProfile(userId: string, childId: string) {
       currentStage = "COMPLETED";
       currentGame = 6;
       currentLevel = 3;
-    } else if (completedSessions.length > 0 && inProgressSession.levelAttempts.length === 0) {
+    } else if (
+      completedSessions.length > 0 &&
+      inProgressSession.levelAttempts.length === 0
+    ) {
       hasInProgress = false;
       completedLevelsCount = 18;
       progressOverall = 100;
@@ -321,21 +338,7 @@ export async function updateChildProfile(
   childId: string,
   input: UpdateChildInput
 ) {
-  const child = await prisma.childProfile.findUnique({
-    where: { id: childId },
-    select: { id: true, userId: true },
-  });
-
-  if (!child) {
-    throw new NotFoundError("Child profile not found");
-  }
-
-  if (child.userId !== userId) {
-    throw new ForbiddenError(
-      "You do not have access to this child profile",
-      "ACCESS_DENIED"
-    );
-  }
+  await assertChildOwnership(userId, childId);
 
   const updated = await prisma.childProfile.update({
     where: { id: childId },
@@ -344,9 +347,13 @@ export async function updateChildProfile(
       ...(input.age !== undefined && { age: input.age }),
       ...(input.language !== undefined && { language: input.language }),
       ...(input.school !== undefined && { school: input.school }),
-      ...(input.selectedClass !== undefined && { selectedClass: input.selectedClass }),
+      ...(input.selectedClass !== undefined && {
+        selectedClass: input.selectedClass,
+      }),
       ...(input.studentId !== undefined && { studentId: input.studentId }),
-      ...(input.parentMobile !== undefined && { parentMobile: input.parentMobile }),
+      ...(input.parentMobile !== undefined && {
+        parentMobile: input.parentMobile,
+      }),
     },
   });
 
@@ -368,14 +375,14 @@ export async function getChildProgress(userId: string, childId: string) {
       },
     }),
     prisma.questSession.findFirst({
-      where: { childProfileId: childId, status: "IN_PROGRESS" },
+      where: { childProfileId: childId, userId, status: "IN_PROGRESS" },
       include: {
         warmUpSubmission: {
           select: { id: true, completedAt: true },
         },
         levelAttempts: {
           where: { status: "COMPLETED" },
-          orderBy: [{ gameId: "asc" }, { levelNumber: "asc" }, { attemptNumber: "desc" }],
+          orderBy: [{ completedAt: "desc" }],
           select: {
             id: true,
             gameId: true,
@@ -407,14 +414,14 @@ export async function getChildProgress(userId: string, childId: string) {
   }
 
   const completedSession = await prisma.questSession.findFirst({
-    where: { childProfileId: childId, status: "COMPLETED" },
+    where: { childProfileId: childId, userId, status: "COMPLETED" },
     include: {
       warmUpSubmission: {
         select: { id: true, completedAt: true },
       },
       levelAttempts: {
         where: { status: "COMPLETED" },
-        orderBy: [{ gameId: "asc" }, { levelNumber: "asc" }, { attemptNumber: "desc" }],
+        orderBy: [{ completedAt: "desc" }],
         select: {
           id: true,
           gameId: true,
@@ -437,7 +444,10 @@ export async function getChildProgress(userId: string, childId: string) {
 
   if (!session) {
     session = completedSession;
-  } else if (completedSession && inProgressSession?.levelAttempts.length === 0) {
+  } else if (
+    completedSession &&
+    inProgressSession?.levelAttempts.length === 0
+  ) {
     // If the child completed an authoritative quest session, and inProgressSession is just starting or empty,
     // display the completed session matrix!
     session = completedSession;
@@ -537,14 +547,14 @@ export async function getChildProgress(userId: string, childId: string) {
     hasSession: true,
     sessionId: session.id,
     status: prog.isQuestComplete ? "COMPLETED" : session.status,
-    currentStage: session.currentStage,
+    currentStage: prog.currentStage,
     currentGame: prog.currentGame,
     currentLevel: prog.currentLevel,
     completedLevelsCount: prog.highestCompletedIndex,
     totalLevelsCount: 18,
     progressPercentage: Math.round((prog.highestCompletedIndex / 18) * 100),
     matrix,
-    recentAttempts: session.levelAttempts.slice(-10),
+    recentAttempts: session.levelAttempts.slice(0, 10),
     hasReport: Boolean(session.questReport),
     reportId: session.questReport?.id || null,
   };
@@ -728,4 +738,14 @@ export async function listAllParentReports(userId: string) {
     questCompletedAt: r.questSession?.completedAt || null,
     generatedAt: r.generatedAt,
   }));
+}
+
+export async function deleteChildProfile(userId: string, childId: string) {
+  await assertChildOwnership(userId, childId);
+
+  await prisma.childProfile.delete({
+    where: { id: childId },
+  });
+
+  return { success: true, message: "Child profile deleted successfully" };
 }

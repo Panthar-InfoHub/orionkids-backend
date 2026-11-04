@@ -3,18 +3,17 @@ import { z } from "zod";
 import { openaiApiKey, env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
 
-// Canonical games metadata
-export const CANONICAL_GAMES = [
-  { id: 1, key: "stroop", name: "Stroop Colour-Word", domain: "Focus & Interference Resistance" },
-  { id: 2, key: "card-flip", name: "Card Flip", domain: "Visual Working Memory" },
-  { id: 3, key: "pattern", name: "Pattern Recognition", domain: "Pattern Induction & Extrapolation" },
-  { id: 4, key: "odd-one-out", name: "Odd One Out", domain: "Visual Feature Acuity" },
-  { id: 5, key: "rule-discovery", name: "Rule Discovery", domain: "Hypothesis Testing & Flexibility" },
-  { id: 6, key: "story-sequencing", name: "Story Sequencing", domain: "Temporal & Narrative Sequencing" },
-] as const;
+import {
+  CANONICAL_GAMES,
+  TOTAL_GAMES,
+  LEVELS_PER_GAME,
+  TOTAL_LEVELS,
+} from "../config/games.js";
 
 export const AiStructuredReportSchema = z.object({
-  reportTitle: z.string().default("OrionKids Cognitive Exploration & Gameplay Report"),
+  reportTitle: z
+    .string()
+    .default("OrionKids Cognitive Exploration & Gameplay Report"),
   childOverview: z.string(),
   questSummary: z.string(),
   overallPerformanceSummary: z.string(),
@@ -177,19 +176,25 @@ You must respond ONLY with a valid JSON object matching this schema:
  * Generate a validated AI report using OpenAI API.
  * Falls back to high-fidelity rule-based generator if OpenAI is unavailable, timed out, or unconfigured.
  */
-export async function generateAiReport(
-  input: GameplayReportInput
-): Promise<{ report: AiStructuredReport; modelName: string; usedAi: boolean; errorMessage?: string }> {
+export async function generateAiReport(input: GameplayReportInput): Promise<{
+  report: AiStructuredReport;
+  modelName: string;
+  usedAi: boolean;
+  errorMessage?: string;
+}> {
   const modelToUse = env.OPENAI_REPORT_MODEL || "gpt-4o-mini";
 
   if (!openaiApiKey) {
-    logger.warn("[AIReportService] OPEN_AI_API_KEY is not configured. Generating rule-based fallback report.");
+    logger.warn(
+      "[AIReportService] OPEN_AI_API_KEY is not configured. Generating rule-based fallback report."
+    );
     const fallback = generateRuleBasedReport(input);
     return {
       report: fallback,
       modelName: "rule-based-engine",
       usedAi: false,
-      errorMessage: "OpenAI API key not configured. Generated authoritative rule-based report.",
+      errorMessage:
+        "OpenAI API key not configured. Generated authoritative rule-based report.",
     };
   }
 
@@ -231,7 +236,10 @@ export async function generateAiReport(
     };
   } catch (err: any) {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    logger.error({ err: errorMsg }, "[AIReportService] OpenAI report generation failed. Using rule-based fallback.");
+    logger.error(
+      { err: errorMsg },
+      "[AIReportService] OpenAI report generation failed. Using rule-based fallback."
+    );
     const fallback = generateRuleBasedReport(input);
     return {
       report: fallback,
@@ -246,7 +254,9 @@ export async function generateAiReport(
  * Deterministic, evidence-based report generator that adheres strictly to the same schema
  * and provides rich educational insights derived from genuine gameplay metrics.
  */
-export function generateRuleBasedReport(input: GameplayReportInput): AiStructuredReport {
+export function generateRuleBasedReport(
+  input: GameplayReportInput
+): AiStructuredReport {
   const { child, quest, warmUp, games } = input;
 
   const gameWiseAnalysis = CANONICAL_GAMES.map((cg) => {
@@ -262,14 +272,20 @@ export function generateRuleBasedReport(input: GameplayReportInput): AiStructure
     if (acc !== null) {
       if (acc >= 85) {
         summary += ` Displayed exceptional mastery and precision in ${cg.domain.toLowerCase()} with ${acc}% accuracy.`;
-        strengths.push(`High accuracy (${acc}%) in ${cg.name}, demonstrating confidence.`);
+        strengths.push(
+          `High accuracy (${acc}%) in ${cg.name}, demonstrating confidence.`
+        );
       } else if (acc >= 65) {
         summary += ` Showed solid competence and steady problem-solving in ${cg.domain.toLowerCase()} (${acc}% accuracy).`;
         strengths.push(`Steady, consistent approach in ${cg.name}.`);
-        practice.push(`Targeted play with gentle progression to reinforce ${cg.domain.toLowerCase()}.`);
+        practice.push(
+          `Targeted play with gentle progression to reinforce ${cg.domain.toLowerCase()}.`
+        );
       } else {
         summary += ` Actively engaged with ${cg.name} (${acc}% accuracy), showing willingness to take on new cognitive challenges.`;
-        practice.push(`Practice fun, low-pressure everyday activities exercising ${cg.domain.toLowerCase()}.`);
+        practice.push(
+          `Practice fun, low-pressure everyday activities exercising ${cg.domain.toLowerCase()}.`
+        );
       }
     } else {
       summary += ` Engaged actively throughout the gameplay trials.`;
@@ -278,9 +294,13 @@ export function generateRuleBasedReport(input: GameplayReportInput): AiStructure
 
     if (rt && rt > 0) {
       if (rt < 1800) {
-        strengths.push(`Quick, decisive response pacing (~${(rt / 1000).toFixed(1)}s per decision).`);
+        strengths.push(
+          `Quick, decisive response pacing (~${(rt / 1000).toFixed(1)}s per decision).`
+        );
       } else {
-        strengths.push(`Deliberate and reflective decision-making pace (~${(rt / 1000).toFixed(1)}s per decision).`);
+        strengths.push(
+          `Deliberate and reflective decision-making pace (~${(rt / 1000).toFixed(1)}s per decision).`
+        );
       }
     }
 
@@ -292,8 +312,16 @@ export function generateRuleBasedReport(input: GameplayReportInput): AiStructure
       averageAccuracy: acc,
       averageReactionTimeMs: rt,
       summary,
-      observedStrengths: strengths.length > 0 ? strengths : [`Persistent engagement throughout ${cg.name}.`],
-      areasForPractice: practice.length > 0 ? practice : [`Continue everyday exploration of ${cg.name.toLowerCase()} puzzles.`],
+      observedStrengths:
+        strengths.length > 0
+          ? strengths
+          : [`Persistent engagement throughout ${cg.name}.`],
+      areasForPractice:
+        practice.length > 0
+          ? practice
+          : [
+              `Continue everyday exploration of ${cg.name.toLowerCase()} puzzles.`,
+            ],
     };
   });
 
@@ -305,7 +333,8 @@ export function generateRuleBasedReport(input: GameplayReportInput): AiStructure
       const acc = att?.accuracy ?? null;
       const duration = att?.durationMs ?? null;
       const rt = att?.averageReactionTimeMs ?? null;
-      const status = att?.status || (acc !== null ? "COMPLETED" : "NOT_RECORDED");
+      const status =
+        att?.status || (acc !== null ? "COMPLETED" : "NOT_RECORDED");
 
       let insight = `Level ${lvl} of ${cg.name}`;
       if (acc !== null) {
@@ -328,8 +357,12 @@ export function generateRuleBasedReport(input: GameplayReportInput): AiStructure
   }
 
   // Identify highest and lowest games for strengths & areas for growth
-  const scoredGames = gameWiseAnalysis.filter((g) => g.averageAccuracy !== null);
-  const sortedByAcc = [...scoredGames].sort((a, b) => (b.averageAccuracy ?? 0) - (a.averageAccuracy ?? 0));
+  const scoredGames = gameWiseAnalysis.filter(
+    (g) => g.averageAccuracy !== null
+  );
+  const sortedByAcc = [...scoredGames].sort(
+    (a, b) => (b.averageAccuracy ?? 0) - (a.averageAccuracy ?? 0)
+  );
 
   const observedStrengths: string[] = [];
   const topGame = sortedByAcc[0];

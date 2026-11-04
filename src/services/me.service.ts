@@ -54,7 +54,8 @@ export async function getCurrentUserProfile(userId: string) {
   const isTermsValid =
     user.termsAccepted === true && user.termsVersion === CURRENT_TERMS_VERSION;
 
-  let accessRequestStatus: "NONE" | "PENDING" | "APPROVED" | "REJECTED" = "NONE";
+  let accessRequestStatus: "NONE" | "PENDING" | "APPROVED" | "REJECTED" =
+    "NONE";
   if (latestRequest) {
     accessRequestStatus = latestRequest.status;
   } else if (user.status === "ACTIVE" || user.role === "ADMIN") {
@@ -67,5 +68,16 @@ export async function getCurrentUserProfile(userId: string) {
     accessRequestStatus,
     accessRequest: latestRequest,
     childProfile: user.childProfiles[0] || null,
+  };
+}
+
+export async function deleteCurrentUserAccount(userId: string) {
+  await prisma.user.delete({
+    where: { id: userId },
+  });
+
+  return {
+    success: true,
+    message: "Account and associated data deleted successfully",
   };
 }

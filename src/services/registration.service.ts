@@ -69,17 +69,20 @@ export function determineDestination(status: {
     return "/access-request";
   }
 
-  // 6. Access request pending review
-  if (status.accessRequestStatus === "PENDING" || status.accountStatus === "PENDING") {
-    return "/access-pending";
-  }
-
-  // 7. Request approved, check onboarding
+  // 6. Request approved / user active, check onboarding (ACTIVE status is authoritative - Issue #2)
   if (status.accountStatus === "ACTIVE") {
     if (!status.onboardingCompleted) {
       return "/onboarding";
     }
     return "/dashboard";
+  }
+
+  // 7. Access request pending review
+  if (
+    status.accessRequestStatus === "PENDING" ||
+    status.accountStatus === "PENDING"
+  ) {
+    return "/access-pending";
   }
 
   return "/access-pending";
@@ -184,12 +187,14 @@ export async function acceptUserTerms(
   }
 
   if (user.status === "RESTRICTED") {
-    throw new ForbiddenError("Your account is restricted", "ACCOUNT_RESTRICTED");
+    throw new ForbiddenError(
+      "Your account is restricted",
+      "ACCOUNT_RESTRICTED"
+    );
   }
 
-  const termsVersion = input.termsVersion || CURRENT_TERMS_VERSION;
-  const privacyPolicyVersion =
-    input.privacyPolicyVersion || CURRENT_PRIVACY_POLICY_VERSION;
+  const termsVersion = CURRENT_TERMS_VERSION;
+  const privacyPolicyVersion = CURRENT_PRIVACY_POLICY_VERSION;
   const now = new Date();
 
   await prisma.$transaction(async (tx) => {
@@ -243,7 +248,10 @@ export async function submitUserAccessRequest(
   }
 
   if (user.status === "RESTRICTED") {
-    throw new ForbiddenError("Your account is restricted", "ACCOUNT_RESTRICTED");
+    throw new ForbiddenError(
+      "Your account is restricted",
+      "ACCOUNT_RESTRICTED"
+    );
   }
 
   // 1. Verify terms acceptance
@@ -262,35 +270,45 @@ export async function submitUserAccessRequest(
     );
   }
 
-  // If already approved active user
-  if (user.status === "ACTIVE" && latestRequest?.status === "APPROVED") {
+  // If user is already active, never demote them back to PENDING (Issue #17)
+  if (user.status === "ACTIVE") {
     return {
       message: "Your account is already active and approved.",
-      request: latestRequest,
+      request: latestRequest || null,
       status: await getRegistrationStatus(userId),
     };
   }
 
   // 3. Create new access request and ensure user status is PENDING
-  const newRequest = await prisma.$transaction(async (tx) => {
-    const created = await tx.accessRequest.create({
-      data: {
-        userId,
-        status: "PENDING",
-        notes: input.notes || null,
-        submittedAt: new Date(),
-      },
-    });
-
-    if (user.status !== "PENDING" && user.role !== "ADMIN") {
-      await tx.user.update({
-        where: { id: userId },
-        data: { status: "PENDING" },
+  let newRequest;
+  try {
+    newRequest = await prisma.$transaction(async (tx) => {
+      const created = await tx.accessRequest.create({
+        data: {
+          userId,
+          status: "PENDING",
+          notes: input.notes || null,
+          submittedAt: new Date(),
+        },
       });
-    }
 
-    return created;
-  });
+      if (user.status !== "PENDING" && user.role !== "ADMIN") {
+        await tx.user.update({
+          where: { id: userId },
+          data: { status: "PENDING" },
+        });
+      }
+
+      return created;
+    });
+  } catch (err: any) {
+    if (err?.code === "P2002") {
+      throw new ConflictError(
+        "An access request is already pending review. Please wait for an administrator to review your request."
+      );
+    }
+    throw err;
+  }
 
   const regStatus = await getRegistrationStatus(userId);
   return {

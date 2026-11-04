@@ -18,10 +18,7 @@ import {
   getUserChildSessionReport,
   getAdminQuestSessionDetail,
 } from "../src/services/admin.service.js";
-import {
-  ForbiddenError,
-  NotFoundError,
-} from "../src/utils/errors.js";
+import { ForbiddenError, NotFoundError } from "../src/utils/errors.js";
 
 describe("Admin User 360° Service & Authorization Test Suite", () => {
   const timestamp = Date.now();
@@ -81,7 +78,9 @@ describe("Admin User 360° Service & Authorization Test Suite", () => {
     await prisma.user.create({ data: normalUserB });
 
     // 4. Create quest session for User A
-    const childProfile = await prisma.childProfile.findFirst({ where: { userId: normalUserA.id } });
+    const childProfile = await prisma.childProfile.findFirst({
+      where: { userId: normalUserA.id },
+    });
     if (childProfile) childAId = childProfile.id;
 
     const sessionA = await prisma.questSession.create({
@@ -158,14 +157,22 @@ describe("Admin User 360° Service & Authorization Test Suite", () => {
 
   it("2. listUsers filters by search query and status", async () => {
     // Search by name
-    const searchResult = await listUsers({ page: 1, limit: 10, search: "Alice Parent" });
+    const searchResult = await listUsers({
+      page: 1,
+      limit: 10,
+      search: "Alice Parent",
+    });
     assert.ok(searchResult.users.length >= 1);
-    assert.equal(searchResult.users[0].id, normalUserA.id);
-    assert.ok(searchResult.users[0].childProfile);
-    assert.equal(searchResult.users[0].childProfile.childName, "Charlie");
+    assert.equal(searchResult.users[0]!.id, normalUserA.id);
+    assert.ok(searchResult.users[0]!.childProfile);
+    assert.equal(searchResult.users[0]!.childProfile!.childName, "Charlie");
 
     // Filter by PENDING status
-    const pendingResult = await listUsers({ page: 1, limit: 10, status: "PENDING" });
+    const pendingResult = await listUsers({
+      page: 1,
+      limit: 10,
+      status: "PENDING",
+    });
     assert.ok(pendingResult.users.some((u) => u.id === normalUserB.id));
   });
 
@@ -190,8 +197,8 @@ describe("Admin User 360° Service & Authorization Test Suite", () => {
   it("4. getUserChildren returns scoped child profiles", async () => {
     const children = await getUserChildren(normalUserA.id);
     assert.equal(children.length, 1);
-    assert.equal(children[0].childName, "Charlie");
-    assert.equal(children[0].selectedClass, "Grade 3");
+    assert.equal(children[0]!.childName, "Charlie");
+    assert.equal(children[0]!.selectedClass, "Grade 3");
 
     // User without children returns empty array
     const emptyChildren = await getUserChildren(normalUserB.id);
@@ -199,9 +206,12 @@ describe("Admin User 360° Service & Authorization Test Suite", () => {
   });
 
   it("5. getUserQuestSessions returns session list with authoritative progression", async () => {
-    const res = await getUserQuestSessions(normalUserA.id, { page: 1, limit: 10 });
+    const res = await getUserQuestSessions(normalUserA.id, {
+      page: 1,
+      limit: 10,
+    });
     assert.equal(res.sessions.length, 1);
-    const session = res.sessions[0];
+    const session = res.sessions[0]!;
     assert.equal(session.id, sessionAId);
     assert.equal(session.warmUpCompleted, true);
     assert.equal(session.completedLevelsCount, 1); // Level 1 is completed
@@ -214,21 +224,21 @@ describe("Admin User 360° Service & Authorization Test Suite", () => {
     const detail = await getUserQuestSessionDetail(normalUserA.id, sessionAId);
     assert.equal(detail.session.id, sessionAId);
     assert.ok(detail.warmUp);
-    assert.equal(detail.warmUp.answers.q1, "Focused");
+    assert.equal((detail.warmUp.answers as any).q1, "Focused");
     assert.equal(detail.progression.highestCompletedIndex, 1);
     assert.equal(detail.progression.games.length, 6);
 
     // Stroop game (Game 1)
-    const stroopGame = detail.progression.games[0];
+    const stroopGame = detail.progression.games[0]!;
     assert.equal(stroopGame.gameKey, "stroop");
     assert.equal(stroopGame.completedLevels, 1);
-    assert.equal(stroopGame.levels[0].status, "COMPLETED");
-    assert.equal(stroopGame.levels[0].bestAccuracy, 90);
-    assert.equal(stroopGame.levels[1].status, "IN_PROGRESS");
-    assert.equal(stroopGame.levels[2].status, "LOCKED");
+    assert.equal(stroopGame.levels[0]!.status, "COMPLETED");
+    assert.equal(stroopGame.levels[0]!.bestAccuracy, 90);
+    assert.equal(stroopGame.levels[1]!.status, "IN_PROGRESS");
+    assert.equal(stroopGame.levels[2]!.status, "LOCKED");
 
     // Other games should be locked
-    const cardFlipGame = detail.progression.games[1];
+    const cardFlipGame = detail.progression.games[1]!;
     assert.equal(cardFlipGame.gameKey, "card-flip");
     assert.equal(cardFlipGame.completedLevels, 0);
   });
@@ -245,7 +255,11 @@ describe("Admin User 360° Service & Authorization Test Suite", () => {
     );
 
     await assert.rejects(
-      async () => getUserSessionAttempts(normalUserB.id, sessionAId, { page: 1, limit: 50 }),
+      async () =>
+        getUserSessionAttempts(normalUserB.id, sessionAId, {
+          page: 1,
+          limit: 50,
+        }),
       (err: any) => {
         assert.ok(err instanceof ForbiddenError);
         return true;
@@ -254,12 +268,16 @@ describe("Admin User 360° Service & Authorization Test Suite", () => {
   });
 
   it("8. getUserSessionAttempts retrieves genuine gameplay telemetry", async () => {
-    const attemptsRes = await getUserSessionAttempts(normalUserA.id, sessionAId, {
-      page: 1,
-      limit: 50,
-    });
+    const attemptsRes = await getUserSessionAttempts(
+      normalUserA.id,
+      sessionAId,
+      {
+        page: 1,
+        limit: 50,
+      }
+    );
     assert.equal(attemptsRes.attempts.length, 1);
-    const attempt = attemptsRes.attempts[0];
+    const attempt = attemptsRes.attempts[0]!;
     assert.equal(attempt.id, attemptA1Id);
     assert.equal(attempt.accuracy, 90);
     assert.equal(attempt.totalTrials, 10);
@@ -299,7 +317,10 @@ describe("Admin User 360° Service & Authorization Test Suite", () => {
       reason: "Suspicious activity detected during audit",
     });
     assert.equal(restricted.status, "RESTRICTED");
-    assert.equal(restricted.restrictedReason, "Suspicious activity detected during audit");
+    assert.equal(
+      restricted.restrictedReason,
+      "Suspicious activity detected during audit"
+    );
   });
 
   it("11. getUserChildDetail returns comprehensive child & parent info and stats", async () => {
@@ -355,36 +376,52 @@ describe("Admin User 360° Service & Authorization Test Suite", () => {
     });
 
     // Fetch Child 1 sessions -> must ONLY contain sessionA
-    const child1Sessions = await getUserChildQuestSessions(normalUserA.id, childAId, {
-      page: 1,
-      limit: 10,
-    });
+    const child1Sessions = await getUserChildQuestSessions(
+      normalUserA.id,
+      childAId,
+      {
+        page: 1,
+        limit: 10,
+      }
+    );
     assert.equal(child1Sessions.sessions.length, 1);
-    assert.equal(child1Sessions.sessions[0].id, sessionAId);
-    assert.equal(child1Sessions.sessions[0].childProfileId, childAId);
+    assert.equal(child1Sessions.sessions[0]!.id, sessionAId);
+    assert.equal(child1Sessions.sessions[0]!.childProfileId, childAId);
 
     // Fetch Child 2 sessions -> must ONLY contain secondSession
-    const child2Sessions = await getUserChildQuestSessions(normalUserA.id, secondChild.id, {
-      page: 1,
-      limit: 10,
-    });
+    const child2Sessions = await getUserChildQuestSessions(
+      normalUserA.id,
+      secondChild.id,
+      {
+        page: 1,
+        limit: 10,
+      }
+    );
     assert.equal(child2Sessions.sessions.length, 1);
-    assert.equal(child2Sessions.sessions[0].id, secondSession.id);
-    assert.equal(child2Sessions.sessions[0].childProfileId, secondChild.id);
+    assert.equal(child2Sessions.sessions[0]!.id, secondSession.id);
+    assert.equal(child2Sessions.sessions[0]!.childProfileId, secondChild.id);
 
     // Status filtering works on child sessions
-    const completedChild1 = await getUserChildQuestSessions(normalUserA.id, childAId, {
-      page: 1,
-      limit: 10,
-      status: "COMPLETED",
-    });
+    const completedChild1 = await getUserChildQuestSessions(
+      normalUserA.id,
+      childAId,
+      {
+        page: 1,
+        limit: 10,
+        status: "COMPLETED",
+      }
+    );
     assert.equal(completedChild1.sessions.length, 0);
 
-    const inProgressChild1 = await getUserChildQuestSessions(normalUserA.id, childAId, {
-      page: 1,
-      limit: 10,
-      status: "IN_PROGRESS",
-    });
+    const inProgressChild1 = await getUserChildQuestSessions(
+      normalUserA.id,
+      childAId,
+      {
+        page: 1,
+        limit: 10,
+        status: "IN_PROGRESS",
+      }
+    );
     assert.equal(inProgressChild1.sessions.length, 1);
 
     // Clean up secondChild and its session
@@ -394,7 +431,11 @@ describe("Admin User 360° Service & Authorization Test Suite", () => {
 
   it("13. getUserChildQuestSessionDetail verifies child ownership and rejects mismatched child ID", async () => {
     // Valid child and session
-    const detail = await getUserChildQuestSessionDetail(normalUserA.id, childAId, sessionAId);
+    const detail = await getUserChildQuestSessionDetail(
+      normalUserA.id,
+      childAId,
+      sessionAId
+    );
     assert.equal(detail.session.id, sessionAId);
     assert.equal(detail.session.childProfileId, childAId);
 
@@ -414,7 +455,11 @@ describe("Admin User 360° Service & Authorization Test Suite", () => {
     // Attempting to access sessionA under dummyChild must be rejected with ForbiddenError
     await assert.rejects(
       async () =>
-        getUserChildQuestSessionDetail(normalUserA.id, dummyChild.id, sessionAId),
+        getUserChildQuestSessionDetail(
+          normalUserA.id,
+          dummyChild.id,
+          sessionAId
+        ),
       (err: any) => {
         assert.ok(err instanceof ForbiddenError);
         assert.equal(err.code, "FORBIDDEN");
@@ -436,5 +481,4 @@ describe("Admin User 360° Service & Authorization Test Suite", () => {
       (err: any) => err instanceof NotFoundError
     );
   });
-
 });

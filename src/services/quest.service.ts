@@ -1,9 +1,18 @@
-import { prisma } from "../lib/prisma.js";
+import { prisma, type Prisma } from "../lib/prisma.js";
 import {
   ForbiddenError,
   NotFoundError,
   ValidationError,
+  ConflictError,
+  ErrorCodes,
 } from "../utils/errors.js";
+import { assertChildOwnership } from "../utils/ownership.js";
+import {
+  CANONICAL_GAMES,
+  TOTAL_GAMES,
+  LEVELS_PER_GAME,
+  TOTAL_LEVELS,
+} from "../config/games.js";
 import type {
   GameKey,
   CompleteLevelInput,
@@ -12,7 +21,6 @@ import { GAME_KEY_TO_ID, GAME_ID_TO_KEY } from "../validators/quest.schema.js";
 import {
   generateAiReport,
   generateRuleBasedReport,
-  CANONICAL_GAMES,
   type GameplayReportInput,
   type AiStructuredReport,
 } from "./aiReport.service.js";
@@ -24,7 +32,11 @@ import { generateReportPdf } from "./pdfReport.service.js";
  */
 export function computeSessionProgression(
   session: { currentGame: number; currentLevel: number; status: string },
-  completedAttempts: Array<{ gameKey: string; levelNumber: number; status?: string }>
+  completedAttempts: Array<{
+    gameKey: string;
+    levelNumber: number;
+    status?: string;
+  }>
 ) {
   const completedIndices = new Set<number>();
   for (const a of completedAttempts) {
@@ -49,7 +61,8 @@ export function computeSessionProgression(
   const storedIndex = (session.currentGame - 1) * 3 + session.currentLevel;
   // Authorized index is at least (highestContiguous + 1)
   const authorizedIndex = Math.max(storedIndex, highestContiguous + 1);
-  const isQuestComplete = session.status === "COMPLETED" || highestContiguous >= 18;
+  const isQuestComplete =
+    session.status === "COMPLETED" || highestContiguous >= 18;
 
   if (isQuestComplete || authorizedIndex > 18) {
     return {
@@ -85,37 +98,34 @@ export async function getOrCreateActiveSession(
   let resolvedChildId = childProfileId;
 
   if (resolvedChildId) {
-    const child = await prisma.childProfile.findUnique({
-      where: { id: resolvedChildId },
-    });
-    if (!child) {
-      throw new NotFoundError("Child profile not found");
-    }
-    if (child.userId !== userId) {
-      throw new ForbiddenError(
-        "You do not have access to this child profile",
-        "ACCESS_DENIED"
-      );
-    }
+    await assertChildOwnership(userId, resolvedChildId);
   } else {
     // If no childProfileId is supplied, check if parent has exactly 1 child profile
     const children = await prisma.childProfile.findMany({
       where: { userId },
       orderBy: { createdAt: "asc" },
     });
+    if (children.length === 0) {
+      throw new ValidationError(
+        "Please create a child profile before starting a quest session",
+        "CHILD_PROFILE_REQUIRED"
+      );
+    }
     if (children.length === 1 && children[0]) {
       resolvedChildId = children[0].id;
+    } else {
+      throw new ValidationError(
+        "Parent has multiple children. Please specify childProfileId.",
+        "AMBIGUOUS_CHILD_PROFILE"
+      );
     }
   }
 
-  const where: any = {
+  const where = {
     userId,
-    status: "IN_PROGRESS",
+    childProfileId: resolvedChildId,
+    status: "IN_PROGRESS" as const,
   };
-
-  if (resolvedChildId) {
-    where.childProfileId = resolvedChildId;
-  }
 
   // Check if there is an in-progress session
   let session = await prisma.questSession.findFirst({
@@ -140,32 +150,62 @@ export async function getOrCreateActiveSession(
   });
 
   if (!session) {
-    session = await prisma.questSession.create({
-      data: {
-        userId,
-        childProfileId: resolvedChildId || null,
-        status: "IN_PROGRESS",
-        currentStage: "WARM_UP",
-        currentGame: 1,
-        currentLevel: 1,
-      },
-      include: {
-        childProfile: true,
-        warmUpSubmission: true,
-        levelAttempts: {
-          where: { status: "COMPLETED" },
-          select: {
-            id: true,
-            gameKey: true,
-            levelNumber: true,
-            accuracy: true,
-            durationMs: true,
-            averageReactionTimeMs: true,
-            completedAt: true,
+    try {
+      session = await prisma.questSession.create({
+        data: {
+          userId,
+          childProfileId: resolvedChildId,
+          status: "IN_PROGRESS",
+          currentStage: "WARM_UP",
+          currentGame: 1,
+          currentLevel: 1,
+        },
+        include: {
+          childProfile: true,
+          warmUpSubmission: true,
+          levelAttempts: {
+            where: { status: "COMPLETED" },
+            select: {
+              id: true,
+              gameKey: true,
+              levelNumber: true,
+              accuracy: true,
+              durationMs: true,
+              averageReactionTimeMs: true,
+              completedAt: true,
+            },
           },
         },
-      },
-    });
+      });
+    } catch (err: any) {
+      if (err?.code === "P2002") {
+        session = await prisma.questSession.findFirst({
+          where: {
+            userId,
+            ...(resolvedChildId ? { childProfileId: resolvedChildId } : {}),
+            status: "IN_PROGRESS",
+          },
+          include: {
+            childProfile: true,
+            warmUpSubmission: true,
+            levelAttempts: {
+              where: { status: "COMPLETED" },
+              select: {
+                id: true,
+                gameKey: true,
+                levelNumber: true,
+                accuracy: true,
+                durationMs: true,
+                averageReactionTimeMs: true,
+                completedAt: true,
+              },
+            },
+          },
+          orderBy: { startedAt: "desc" },
+        });
+      }
+      if (!session) throw err;
+    }
   }
 
   // Reconcile progression if drifted behind completed attempts
@@ -206,28 +246,17 @@ export async function getCurrentSession(
   userId: string,
   childProfileId?: string
 ) {
-  const whereInProgress: any = {
+  const whereInProgress: Prisma.QuestSessionWhereInput = {
     userId,
     status: "IN_PROGRESS",
   };
-  const whereCompleted: any = {
+  const whereCompleted: Prisma.QuestSessionWhereInput = {
     userId,
     status: "COMPLETED",
   };
 
   if (childProfileId) {
-    const child = await prisma.childProfile.findUnique({
-      where: { id: childProfileId },
-    });
-    if (!child) {
-      throw new NotFoundError("Child profile not found");
-    }
-    if (child.userId !== userId) {
-      throw new ForbiddenError(
-        "You do not have access to this child profile",
-        "ACCESS_DENIED"
-      );
-    }
+    await assertChildOwnership(userId, childProfileId);
     whereInProgress.childProfileId = childProfileId;
     whereCompleted.childProfileId = childProfileId;
   }
@@ -255,7 +284,10 @@ export async function getCurrentSession(
   });
 
   if (activeSession) {
-    const prog = computeSessionProgression(activeSession, activeSession.levelAttempts);
+    const prog = computeSessionProgression(
+      activeSession,
+      activeSession.levelAttempts
+    );
     if (prog.needsReconciliation) {
       const reconciled = await prisma.questSession.update({
         where: { id: activeSession.id },
@@ -362,16 +394,24 @@ export async function saveWarmUpSubmission(
   userId: string,
   sessionId?: string,
   answers?: Record<string, string>,
-  completedAt?: string
+  completedAt?: string,
+  childProfileId?: string
 ) {
   let targetSessionId = sessionId;
   if (!targetSessionId) {
-    const active = await getOrCreateActiveSession(userId);
+    const active = await getOrCreateActiveSession(userId, childProfileId);
     targetSessionId = active.id;
   }
 
   const session = await prisma.questSession.findUnique({
     where: { id: targetSessionId },
+    include: {
+      warmUpSubmission: true,
+      levelAttempts: {
+        where: { status: "COMPLETED" },
+        select: { id: true },
+      },
+    },
   });
 
   if (!session) {
@@ -379,13 +419,26 @@ export async function saveWarmUpSubmission(
   }
 
   if (session.userId !== userId) {
-    throw new ForbiddenError("You do not own this quest session");
+    throw new ForbiddenError("You do not own this quest session", "FORBIDDEN");
   }
 
   if (session.status !== "IN_PROGRESS") {
-    throw new ValidationError(
-      "This quest session is already completed or abandoned"
+    throw new ConflictError(
+      "This quest session is already completed or abandoned",
+      "SESSION_CLOSED"
     );
+  }
+
+  // Issue #13: Prevent warm-up submission from resetting existing quest progress
+  if (session.warmUpSubmission) {
+    const hasProgressed =
+      session.currentStage !== "WARM_UP" || session.levelAttempts.length > 0;
+    if (hasProgressed) {
+      throw new ConflictError(
+        "Warm-up questionnaire has already been completed and quest progression has started.",
+        "WARMUP_ALREADY_COMPLETED"
+      );
+    }
   }
 
   const validAnswers = answers || {};
@@ -408,9 +461,13 @@ export async function saveWarmUpSubmission(
     const updatedSession = await tx.questSession.update({
       where: { id: targetSessionId! },
       data: {
-        currentStage: "GAME_1_LEVEL_1",
-        currentGame: 1,
-        currentLevel: 1,
+        ...(session.currentStage === "WARM_UP"
+          ? {
+              currentStage: "GAME_1_LEVEL_1",
+              currentGame: 1,
+              currentLevel: 1,
+            }
+          : {}),
         lastActivityAt: new Date(),
       },
     });
@@ -506,6 +563,7 @@ export async function startLevelAttempt(
           currentLevel: prog.currentLevel,
           currentStage: prog.currentStage,
           status: prog.isQuestComplete ? "COMPLETED" : "IN_PROGRESS",
+          completedAt: prog.isQuestComplete ? new Date() : null,
           lastActivityAt: new Date(),
         },
         select: {
@@ -531,6 +589,13 @@ export async function startLevelAttempt(
           },
         },
       });
+    }
+
+    if (currentSession.status === "COMPLETED" || prog.isQuestComplete) {
+      throw new ConflictError(
+        "Quest session is already completed",
+        "SESSION_CLOSED"
+      );
     }
 
     const authorizedOverallIndex =
@@ -623,18 +688,44 @@ export async function startLevelAttempt(
       initialMetrics.isReplay = true;
     }
 
-    const created = await tx.levelAttempt.create({
-      data: {
-        questSessionId: sessionId,
-        userId,
-        gameId: requestedGameId,
-        gameKey,
-        levelNumber,
-        attemptNumber: nextAttemptNumber,
-        status: "IN_PROGRESS",
-        metrics: initialMetrics,
-      },
-    });
+    let created;
+    try {
+      created = await tx.levelAttempt.create({
+        data: {
+          questSessionId: sessionId,
+          userId,
+          gameId: requestedGameId,
+          gameKey,
+          levelNumber,
+          attemptNumber: nextAttemptNumber,
+          status: "IN_PROGRESS",
+          metrics: initialMetrics,
+        },
+      });
+    } catch (err: any) {
+      if (err?.code === "P2002") {
+        // Race condition / duplicate attempt start: return existing concurrent attempt
+        const existingConcurrent = await tx.levelAttempt.findFirst({
+          where: {
+            questSessionId: sessionId,
+            gameKey,
+            levelNumber,
+          },
+          orderBy: { attemptNumber: "desc" },
+        });
+        if (existingConcurrent) {
+          return {
+            attemptId: existingConcurrent.id,
+            sessionId: session.id,
+            gameKey,
+            levelNumber,
+            status: existingConcurrent.status,
+            attemptNumber: existingConcurrent.attemptNumber,
+          };
+        }
+      }
+      throw err;
+    }
 
     return {
       attemptId: created.id,
@@ -653,10 +744,7 @@ export async function completeLevelAttempt(
   input: CompleteLevelInput
 ) {
   // Reject placeholder/synthetic completion
-  if (
-    input.totalTrials !== undefined &&
-    input.totalTrials <= 0
-  ) {
+  if (input.totalTrials !== undefined && input.totalTrials <= 0) {
     throw new ValidationError(
       "Level completion requires genuine gameplay trials (totalTrials must be greater than 0)"
     );
@@ -702,10 +790,14 @@ export async function completeLevelAttempt(
       const requestedIndex = (requestedGameId - 1) * 3 + input.levelNumber;
 
       // Compute progression from current session and its completed attempts
-      const prog = computeSessionProgression(currentSession, currentSession.levelAttempts);
+      const prog = computeSessionProgression(
+        currentSession,
+        currentSession.levelAttempts
+      );
 
       const existingCompleted = currentSession.levelAttempts.find(
-        (a) => a.gameKey === input.gameKey && a.levelNumber === input.levelNumber
+        (a) =>
+          a.gameKey === input.gameKey && a.levelNumber === input.levelNumber
       );
 
       // Closed session handling
@@ -749,9 +841,19 @@ export async function completeLevelAttempt(
         orderBy: { attemptNumber: "desc" },
       });
 
-      const completedAt = input.completedAt
-        ? new Date(input.completedAt)
-        : new Date();
+      const completedAt = new Date();
+      const computedAccuracy =
+        typeof input.totalTrials === "number" &&
+        input.totalTrials > 0 &&
+        typeof input.correctTrials === "number"
+          ? Math.round((input.correctTrials / input.totalTrials) * 100)
+          : (input.accuracy ?? null);
+      const serverDurationMs = activeAttempt?.startedAt
+        ? Math.max(
+            0,
+            completedAt.getTime() - new Date(activeAttempt.startedAt).getTime()
+          )
+        : (input.durationMs ?? null);
 
       // 1. Idempotent Retry: Level is ALREADY completed
       if (existingCompleted) {
@@ -762,8 +864,8 @@ export async function completeLevelAttempt(
               status: "COMPLETED",
               totalTrials: input.totalTrials ?? null,
               correctTrials: input.correctTrials ?? null,
-              accuracy: input.accuracy ?? null,
-              durationMs: input.durationMs ?? null,
+              accuracy: computedAccuracy,
+              durationMs: serverDurationMs,
               averageReactionTimeMs: input.averageReactionTimeMs ?? null,
               metrics: input.metrics || {},
               trialRecords: input.trialRecords || [],
@@ -791,7 +893,10 @@ export async function completeLevelAttempt(
         let isQuestFinished = false;
 
         if (requestedIndex >= prog.authorizedIndex) {
-          const newHighest = Math.max(prog.highestCompletedIndex, requestedIndex);
+          const newHighest = Math.max(
+            prog.highestCompletedIndex,
+            requestedIndex
+          );
           if (newHighest >= 18) {
             nextGame = 6;
             nextLevel = 3;
@@ -830,22 +935,22 @@ export async function completeLevelAttempt(
       }
 
       // 2. First completion of this level:
-      // Concurrency guard: Atomically advance session state first.
+      // Progression calculation: Determine next stage monotonically based on highest completed level.
       const newHighest = Math.max(prog.highestCompletedIndex, requestedIndex);
       let nextGame: number;
       let nextLevel: number;
       let nextStage: string;
       let isQuestFinished = false;
 
-      if (newHighest >= 18) {
-        nextGame = 6;
-        nextLevel = 3;
+      if (newHighest >= TOTAL_LEVELS) {
+        nextGame = TOTAL_GAMES;
+        nextLevel = LEVELS_PER_GAME;
         nextStage = "COMPLETED";
         isQuestFinished = true;
       } else {
         const nextIndex = newHighest + 1;
-        nextGame = Math.floor((nextIndex - 1) / 3) + 1;
-        nextLevel = ((nextIndex - 1) % 3) + 1;
+        nextGame = Math.floor((nextIndex - 1) / LEVELS_PER_GAME) + 1;
+        nextLevel = ((nextIndex - 1) % LEVELS_PER_GAME) + 1;
         nextStage = `GAME_${nextGame}_LEVEL_${nextLevel}`;
       }
 
@@ -894,17 +999,41 @@ export async function completeLevelAttempt(
           };
         }
       } else {
+        // Progression is strictly monotonic: completing an earlier level never regresses stored stage (Issue #27)
+        const storedIndex =
+          (currentSession.currentGame - 1) * 3 + currentSession.currentLevel;
+        const targetIndex = Math.max(storedIndex, newHighest + 1);
+        let targetGame = currentSession.currentGame;
+        let targetLevel = currentSession.currentLevel;
+        let targetStage = currentSession.currentStage;
+        let questFinished = isQuestFinished;
+
+        if (targetIndex >= 18 && newHighest >= 18) {
+          targetGame = 6;
+          targetLevel = 3;
+          targetStage = "COMPLETED";
+          questFinished = true;
+        } else if (targetIndex > storedIndex) {
+          targetGame = Math.floor((targetIndex - 1) / 3) + 1;
+          targetLevel = ((targetIndex - 1) % 3) + 1;
+          targetStage = `GAME_${targetGame}_LEVEL_${targetLevel}`;
+        }
+
         await tx.questSession.update({
           where: { id: sessionId },
           data: {
-            currentGame: nextGame,
-            currentLevel: nextLevel,
-            currentStage: nextStage,
-            status: isQuestFinished ? "COMPLETED" : "IN_PROGRESS",
-            completedAt: isQuestFinished ? new Date() : null,
+            currentGame: targetGame,
+            currentLevel: targetLevel,
+            currentStage: targetStage,
+            status: questFinished ? "COMPLETED" : "IN_PROGRESS",
+            completedAt: questFinished ? new Date() : null,
             lastActivityAt: new Date(),
           },
         });
+        nextGame = targetGame;
+        nextLevel = targetLevel;
+        nextStage = targetStage;
+        isQuestFinished = questFinished;
       }
 
       // Persist the completed attempt
@@ -916,8 +1045,8 @@ export async function completeLevelAttempt(
             status: "COMPLETED",
             totalTrials: input.totalTrials ?? null,
             correctTrials: input.correctTrials ?? null,
-            accuracy: input.accuracy ?? null,
-            durationMs: input.durationMs ?? null,
+            accuracy: computedAccuracy,
+            durationMs: serverDurationMs,
             averageReactionTimeMs: input.averageReactionTimeMs ?? null,
             metrics: input.metrics || {},
             trialRecords: input.trialRecords || [],
@@ -944,8 +1073,8 @@ export async function completeLevelAttempt(
             status: "COMPLETED",
             totalTrials: input.totalTrials ?? null,
             correctTrials: input.correctTrials ?? null,
-            accuracy: input.accuracy ?? null,
-            durationMs: input.durationMs ?? null,
+            accuracy: computedAccuracy,
+            durationMs: serverDurationMs,
             averageReactionTimeMs: input.averageReactionTimeMs ?? null,
             metrics: input.metrics || {},
             trialRecords: input.trialRecords || [],
@@ -1040,7 +1169,11 @@ export async function generateOrGetReport(
       },
       levelAttempts: {
         where: { status: "COMPLETED" },
-        orderBy: [{ gameId: "asc" }, { levelNumber: "asc" }, { attemptNumber: "desc" }],
+        orderBy: [
+          { gameId: "asc" },
+          { levelNumber: "asc" },
+          { attemptNumber: "desc" },
+        ],
         select: {
           id: true,
           gameId: true,
@@ -1074,36 +1207,41 @@ export async function generateOrGetReport(
     );
   }
 
-  let childProfile = session.childProfile;
-  if (!childProfile) {
-    childProfile = await prisma.childProfile.findFirst({
-      where: { userId: session.userId },
-      orderBy: { createdAt: "asc" },
-      select: {
-        id: true,
-        childName: true,
-        age: true,
-        selectedClass: true,
-        school: true,
-      },
-    });
+  // Refuse report generation for a session without an assigned child profile (Issue #8)
+  if (!session.childProfileId || !session.childProfile) {
+    throw new ConflictError(
+      "Cannot generate a report for a quest session without an assigned child profile.",
+      "CHILD_PROFILE_REQUIRED"
+    );
   }
 
-  const childName = childProfile?.childName || "Young Explorer";
-  const age = childProfile?.age || 7;
-  const selectedClass = childProfile?.selectedClass || "Class 1";
-  const school = childProfile?.school || null;
+  const childProfile = session.childProfile;
+  const childName = childProfile.childName;
+  const age = childProfile.age;
+  const selectedClass = childProfile.selectedClass;
+  const school = childProfile.school || null;
 
-  // Exclude synthetic/autoAdvanced/zero-trial attempts from genuine completion metrics
-  const isGenuineAttempt = (a: any) =>
-    typeof a.totalTrials === "number" &&
-    a.totalTrials > 0 &&
-    !(a.metrics as any)?.autoAdvanced &&
-    !(a.metrics as any)?.skippedByFrontend;
+  // Exclude synthetic/autoAdvanced/zero-trial/skipped attempts from genuine completion metrics (Issue #11)
+  const isGenuineAttempt = (a: (typeof session.levelAttempts)[number]) => {
+    if (typeof a.totalTrials !== "number" || a.totalTrials <= 0) return false;
+    if (typeof a.correctTrials !== "number" || a.correctTrials < 0)
+      return false;
+    if (a.metrics && typeof a.metrics === "object") {
+      const metricsObj = a.metrics as Record<string, unknown>;
+      for (const k of Object.keys(metricsObj)) {
+        if (k.startsWith("skipped") && Boolean(metricsObj[k])) {
+          return false;
+        }
+      }
+      if (Boolean(metricsObj.autoAdvanced)) return false;
+    }
+    return true;
+  };
 
   const rawAttempts = session.levelAttempts.filter(isGenuineAttempt);
 
-  // Deduplicate by gameId-levelNumber (keeping the latest completed attempt)
+  // Deduplicate by gameId-levelNumber using deterministic ordering:
+  // latest completedAt, then attemptNumber as tiebreaker (Issue #35)
   const dedupedMap = new Map<string, (typeof rawAttempts)[0]>();
   for (const att of rawAttempts) {
     const key = `${att.gameId}-${att.levelNumber}`;
@@ -1114,10 +1252,12 @@ export async function generateOrGetReport(
       const existingTime = existing.completedAt
         ? new Date(existing.completedAt).getTime()
         : 0;
-      const attTime = att.completedAt
-        ? new Date(att.completedAt).getTime()
-        : 0;
-      if (att.attemptNumber > existing.attemptNumber || attTime > existingTime) {
+      const attTime = att.completedAt ? new Date(att.completedAt).getTime() : 0;
+      if (attTime !== existingTime) {
+        if (attTime > existingTime) {
+          dedupedMap.set(key, att);
+        }
+      } else if (att.attemptNumber > existing.attemptNumber) {
         dedupedMap.set(key, att);
       }
     }
@@ -1174,10 +1314,17 @@ export async function generateOrGetReport(
 
   const warmUpAnswers =
     (session.warmUpSubmission?.answers as Record<string, string>) || {};
-  const copingStrategy = warmUpAnswers["2"] || "retry";
-  const learningStyle = warmUpAnswers["3"] || "both";
-  const favoriteSubject = warmUpAnswers["4"] || "numbers";
-  const emotionalState = warmUpAnswers["6"] || "happy";
+  const copingStrategy = warmUpAnswers["2"] || null;
+  const learningStyle = warmUpAnswers["3"] || null;
+  const favoriteSubject = warmUpAnswers["4"] || null;
+  const emotionalState = warmUpAnswers["6"] || null;
+
+  const summaryNote =
+    overallAccuracy >= 85
+      ? `Demonstrated outstanding focus and accuracy (${overallAccuracy}%) with consistent performance across evaluated cognitive challenges.`
+      : overallAccuracy >= 60
+        ? `Demonstrated steady focus, positive persistence, and an adaptable problem-solving approach (${overallAccuracy}% accuracy) throughout the cognitive exploration journey.`
+        : `Engaged actively across levels, showing notable persistence while working through challenging tasks (${overallAccuracy}% accuracy).`;
 
   const growthObservations = {
     copingStrategy,
@@ -1188,8 +1335,7 @@ export async function generateOrGetReport(
       totalLevelsCompleted >= 18
         ? "Full 18-Level Completion"
         : `${totalLevelsCompleted}/18 Levels Evaluated`,
-    summaryNote:
-      "Demonstrated steady focus, adaptable problem-solving approach, and positive interaction throughout the cognitive exploration journey.",
+    summaryNote,
   };
 
   const cognitiveFacets = {
@@ -1268,16 +1414,18 @@ export async function generateOrGetReport(
     quest: {
       sessionId,
       startedAt: session.startedAt.toISOString(),
-      completedAt: session.completedAt ? session.completedAt.toISOString() : null,
+      completedAt: session.completedAt
+        ? session.completedAt.toISOString()
+        : null,
       totalLevelsCompleted,
       overallAccuracy,
       totalDurationMs,
     },
     warmUp: {
-      copingStrategy,
-      learningStyle,
-      favoriteSubject,
-      emotionalState,
+      copingStrategy: copingStrategy || "retry",
+      learningStyle: learningStyle || "both",
+      favoriteSubject: favoriteSubject || "exploration",
+      emotionalState: emotionalState || "happy",
     },
     games: gamesPayload,
   };
@@ -1429,8 +1577,26 @@ export async function getReportPdfBuffer(
   });
 }
 
-function formatSessionResponse(session: any) {
-  const overallIndex = (session.currentGame - 1) * 3 + session.currentLevel;
+interface FormattableSession {
+  id: string;
+  userId: string;
+  childProfileId?: string | null;
+  childProfile?: { childName?: string | null } | null;
+  status: string;
+  currentStage: string;
+  currentGame: number;
+  currentLevel: number;
+  warmUpSubmission?: unknown | null;
+  startedAt: Date;
+  lastActivityAt: Date;
+  completedAt?: Date | null;
+  levelAttempts?: unknown[];
+  questReport?: unknown | null;
+}
+
+function formatSessionResponse(session: FormattableSession) {
+  const overallIndex =
+    (session.currentGame - 1) * LEVELS_PER_GAME + session.currentLevel;
 
   return {
     id: session.id,
@@ -1442,8 +1608,8 @@ function formatSessionResponse(session: any) {
     currentGame: session.currentGame,
     currentLevel: session.currentLevel,
     currentProgressIndex:
-      session.status === "COMPLETED" ? 18 : overallIndex - 1,
-    totalLevels: 18,
+      session.status === "COMPLETED" ? TOTAL_LEVELS : overallIndex - 1,
+    totalLevels: TOTAL_LEVELS,
     isWarmUpCompleted: Boolean(session.warmUpSubmission),
     startedAt: session.startedAt,
     lastActivityAt: session.lastActivityAt,
@@ -1454,24 +1620,13 @@ function formatSessionResponse(session: any) {
 }
 
 export async function getResumeState(userId: string, childProfileId?: string) {
-  const where: any = {
+  const where: Prisma.QuestSessionWhereInput = {
     userId,
     status: "IN_PROGRESS",
   };
 
   if (childProfileId) {
-    const child = await prisma.childProfile.findUnique({
-      where: { id: childProfileId },
-    });
-    if (!child) {
-      throw new NotFoundError("Child profile not found");
-    }
-    if (child.userId !== userId) {
-      throw new ForbiddenError(
-        "You do not have access to this child profile",
-        "ACCESS_DENIED"
-      );
-    }
+    await assertChildOwnership(userId, childProfileId);
     where.childProfileId = childProfileId;
   }
 
@@ -1537,7 +1692,10 @@ export async function getResumeState(userId: string, childProfileId?: string) {
     const staleIds: string[] = [];
     for (const s of activeSessions) {
       const key = s.childProfileId || "unassigned";
-      if (seenChildren.has(key)) {
+      if (
+        seenChildren.has(key) ||
+        (primarySession.childProfileId && !s.childProfileId)
+      ) {
         staleIds.push(s.id);
       } else {
         seenChildren.add(key);
@@ -1570,7 +1728,10 @@ export async function getResumeState(userId: string, childProfileId?: string) {
   }
 
   // Compute authoritative stage from contiguous completions
-  const prog = computeSessionProgression(primarySession, primarySession.levelAttempts);
+  const prog = computeSessionProgression(
+    primarySession,
+    primarySession.levelAttempts
+  );
   const activeGame = prog.currentGame;
   const activeLevel = prog.currentLevel;
   const activeStage = prog.currentStage;
@@ -1635,61 +1796,68 @@ export async function saveAttemptCheckpoint(
   attemptId: string,
   checkpoint: Record<string, any>
 ) {
-  const session = await prisma.questSession.findUnique({
-    where: { id: sessionId },
-  });
+  return await prisma.$transaction(async (tx) => {
+    const session = await tx.questSession.findUnique({
+      where: { id: sessionId },
+    });
 
-  if (!session) {
-    throw new NotFoundError("Quest session not found");
-  }
+    if (!session) {
+      throw new NotFoundError("Quest session not found");
+    }
 
-  if (session.userId !== userId) {
-    throw new ForbiddenError("You do not own this quest session");
-  }
+    if (session.userId !== userId) {
+      throw new ForbiddenError("You do not own this quest session");
+    }
 
-  if (session.status !== "IN_PROGRESS") {
-    throw new ValidationError("Cannot save checkpoint on a closed quest session");
-  }
+    if (session.status !== "IN_PROGRESS") {
+      throw new ConflictError(
+        "Cannot save checkpoint on a closed quest session",
+        "SESSION_CLOSED"
+      );
+    }
 
-  const attempt = await prisma.levelAttempt.findUnique({
-    where: { id: attemptId },
-  });
+    const attempt = await tx.levelAttempt.findUnique({
+      where: { id: attemptId },
+    });
 
-  if (!attempt || attempt.questSessionId !== sessionId) {
-    throw new NotFoundError("Level attempt not found in this quest session");
-  }
+    if (!attempt || attempt.questSessionId !== sessionId) {
+      throw new NotFoundError("Level attempt not found in this quest session");
+    }
 
-  if (attempt.userId !== userId) {
-    throw new ForbiddenError("You do not own this level attempt");
-  }
+    if (attempt.userId !== userId) {
+      throw new ForbiddenError("You do not own this level attempt");
+    }
 
-  if (attempt.status !== "IN_PROGRESS") {
-    throw new ValidationError(
-      "Cannot save checkpoint on an attempt that is already completed or abandoned"
-    );
-  }
+    if (attempt.status !== "IN_PROGRESS") {
+      throw new ValidationError(
+        "Cannot save checkpoint on an attempt that is already completed or abandoned"
+      );
+    }
 
-  const currentMetrics = (attempt.metrics as Record<string, any>) || {};
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const currentMetrics = (attempt.metrics as Record<string, any>) || {};
 
-  const updatedAttempt = await prisma.levelAttempt.update({
-    where: { id: attemptId },
-    data: {
-      metrics: {
-        ...currentMetrics,
-        checkpoint,
-        checkpointSavedAt: new Date().toISOString(),
+    const updatedAttempt = await tx.levelAttempt.update({
+      where: { id: attemptId },
+      data: {
+        metrics: {
+          ...currentMetrics,
+          checkpoint,
+          checkpointSavedAt: nowIso,
+        },
       },
-    },
-  });
+    });
 
-  await prisma.questSession.update({
-    where: { id: sessionId },
-    data: { lastActivityAt: new Date() },
-  });
+    await tx.questSession.update({
+      where: { id: sessionId },
+      data: { lastActivityAt: now },
+    });
 
-  return {
-    success: true,
-    attemptId: updatedAttempt.id,
-    checkpointSavedAt: new Date().toISOString(),
-  };
+    return {
+      success: true,
+      attemptId: updatedAttempt.id,
+      checkpointSavedAt: nowIso,
+    };
+  });
 }

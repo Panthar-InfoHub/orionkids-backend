@@ -32,9 +32,7 @@ export async function acceptTermsController(req: Request, res: Response) {
   const userId = getUserId(req);
   const body = acceptTermsBodySchema.parse(req.body);
 
-  const ipAddress =
-    (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
-    req.socket.remoteAddress;
+  const ipAddress = req.ip || req.socket.remoteAddress;
   const userAgent = req.headers["user-agent"];
 
   const result = await acceptUserTerms(userId, body, { ipAddress, userAgent });

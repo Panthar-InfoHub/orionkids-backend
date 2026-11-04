@@ -70,7 +70,6 @@ router.get(
   asyncHandler(getUserSessionReportController)
 );
 
-
 // Child profile detail
 router.get(
   "/users/:userId/children/:childProfileId",
@@ -121,7 +120,6 @@ router.get(
 
 // Reports administration across all children and users
 router.get("/reports", asyncHandler(adminListReportsController));
-
 
 // Access requests administration
 router.get("/access-requests", asyncHandler(listAccessRequestsController));

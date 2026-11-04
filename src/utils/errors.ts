@@ -1,3 +1,32 @@
+export const ErrorCodes = {
+  // Auth & Access
+  UNAUTHORIZED: "UNAUTHORIZED",
+  ACCOUNT_PENDING: "ACCOUNT_PENDING",
+  ACCOUNT_RESTRICTED: "ACCOUNT_RESTRICTED",
+  FORBIDDEN: "FORBIDDEN",
+  ACCESS_DENIED: "ACCESS_DENIED",
+  NOT_FOUND: "NOT_FOUND",
+  VALIDATION_ERROR: "VALIDATION_ERROR",
+  CONFLICT: "CONFLICT",
+  TOO_MANY_REQUESTS: "TOO_MANY_REQUESTS",
+  INTERNAL_SERVER_ERROR: "INTERNAL_SERVER_ERROR",
+
+  // Business state & workflow conflicts
+  SESSION_CLOSED: "SESSION_CLOSED",
+  WARMUP_REQUIRED: "WARMUP_REQUIRED",
+  WARMUP_ALREADY_COMPLETED: "WARMUP_ALREADY_COMPLETED",
+  CHILD_PROFILE_REQUIRED: "CHILD_PROFILE_REQUIRED",
+  REQUEST_ALREADY_REVIEWED: "REQUEST_ALREADY_REVIEWED",
+  USER_RESTRICTED: "USER_RESTRICTED",
+  CANNOT_RESTRICT_ADMIN: "CANNOT_RESTRICT_ADMIN",
+  CANNOT_MODIFY_SELF: "CANNOT_MODIFY_SELF",
+  FOREIGN_KEY_VIOLATION: "FOREIGN_KEY_VIOLATION",
+  MALFORMED_IDENTIFIER: "MALFORMED_IDENTIFIER",
+  PRISMA_VALIDATION_ERROR: "PRISMA_VALIDATION_ERROR",
+} as const;
+
+export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes] | string;
+
 /**
  * Base class for every error we throw on purpose.
  * Its `message` is safe to show to the client; the error handler sends it as-is.
@@ -11,7 +40,7 @@ export class AppError extends Error {
   constructor(
     message: string,
     statusCode = 500,
-    code = "INTERNAL_SERVER_ERROR",
+    code: ErrorCode = ErrorCodes.INTERNAL_SERVER_ERROR,
     details?: unknown
   ) {
     super(message);
@@ -51,8 +80,8 @@ export class NotFoundError extends AppError {
 }
 
 export class ConflictError extends AppError {
-  constructor(message = "Resource already exists") {
-    super(message, 409, "CONFLICT");
+  constructor(message = "Resource already exists", code = "CONFLICT") {
+    super(message, 409, code);
   }
 }
 

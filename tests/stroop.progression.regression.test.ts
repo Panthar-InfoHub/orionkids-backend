@@ -207,7 +207,10 @@ describe("Stroop Progression & Telemetry Regression Suite", () => {
     ]);
 
     // All should report success (1 first recording + 3 idempotent confirmations)
-    assert.equal(results.every((r) => r.success), true);
+    assert.equal(
+      results.every((r) => r.success),
+      true
+    );
 
     const session = await getSessionById(userIdA, sessionAId);
     // Should advance from Level 2 to Level 3, and NOT beyond Level 3!
@@ -287,7 +290,7 @@ describe("Stroop Progression & Telemetry Regression Suite", () => {
       },
     });
 
-    await prisma.childProfile.create({
+    const repChild = await prisma.childProfile.create({
       data: {
         userId: reportUserId,
         childName: "Report Explorer",
@@ -304,6 +307,7 @@ describe("Stroop Progression & Telemetry Regression Suite", () => {
     const repSession = await prisma.questSession.create({
       data: {
         userId: reportUserId,
+        childProfileId: repChild.id,
         status: "COMPLETED",
         currentGame: 6,
         currentLevel: 3,
@@ -409,7 +413,11 @@ describe("Stroop Progression & Telemetry Regression Suite", () => {
 
   // Requirement: Progression transitions verify Level 1 -> 2 -> 3 -> Game 2 Level 1
   it("11. verifies nextLevelRoute contract for Level 1, 2, and 3 transitions", () => {
-    const computeRoute = (currentGame: number, currentLevel: number, isQuestComplete: boolean) => {
+    const computeRoute = (
+      currentGame: number,
+      currentLevel: number,
+      isQuestComplete: boolean
+    ) => {
       if (isQuestComplete) return "/report";
       const keyMap: Record<number, string> = {
         1: "stroop",
@@ -420,7 +428,9 @@ describe("Stroop Progression & Telemetry Regression Suite", () => {
         6: "story-sequencing",
       };
       const nextGameKey = keyMap[currentGame];
-      return nextGameKey ? `/games/${nextGameKey}?level=${currentLevel}` : "/report";
+      return nextGameKey
+        ? `/games/${nextGameKey}?level=${currentLevel}`
+        : "/report";
     };
 
     // Level 1 complete -> session advanced to Level 2
@@ -490,12 +500,19 @@ describe("Stroop Progression & Telemetry Regression Suite", () => {
     });
 
     // When starting Level 2, the service reconciles the drifted session to Level 2 and succeeds
-    const startL2 = await startLevelAttempt(reconUserId, driftedSession.id, "stroop", 2);
+    const startL2 = await startLevelAttempt(
+      reconUserId,
+      driftedSession.id,
+      "stroop",
+      2
+    );
     assert.equal(startL2.levelNumber, 2);
     assert.equal(startL2.status, "IN_PROGRESS");
 
     // Session in DB is now reconciled to Game 1 Level 2
-    const checked = await prisma.questSession.findUnique({ where: { id: driftedSession.id } });
+    const checked = await prisma.questSession.findUnique({
+      where: { id: driftedSession.id },
+    });
     assert.equal(checked?.currentLevel, 2);
     assert.equal(checked?.currentStage, "GAME_1_LEVEL_2");
 
@@ -534,9 +551,19 @@ describe("Stroop Progression & Telemetry Regression Suite", () => {
     });
 
     // Initial level-start request
-    const att1 = await startLevelAttempt(dedupeUserId, dSession.id, "stroop", 1);
+    const att1 = await startLevelAttempt(
+      dedupeUserId,
+      dSession.id,
+      "stroop",
+      1
+    );
     // Repeated retry level-start request
-    const att2 = await startLevelAttempt(dedupeUserId, dSession.id, "stroop", 1);
+    const att2 = await startLevelAttempt(
+      dedupeUserId,
+      dSession.id,
+      "stroop",
+      1
+    );
 
     // Both must return the exact same in-progress attempt ID
     assert.equal(att1.attemptId, att2.attemptId);
@@ -597,7 +624,9 @@ describe("Stroop Progression & Telemetry Regression Suite", () => {
     assert.equal(finalRes.nextStage, "COMPLETED");
 
     // Session in DB must be COMPLETED
-    const updated = await prisma.questSession.findUnique({ where: { id: qSession.id } });
+    const updated = await prisma.questSession.findUnique({
+      where: { id: qSession.id },
+    });
     assert.equal(updated?.status, "COMPLETED");
     assert.ok(updated?.completedAt);
 

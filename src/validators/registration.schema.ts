@@ -8,7 +8,10 @@ export const acceptTermsBodySchema = z.object({
     message: "You must accept the terms and conditions to proceed.",
   }),
   termsVersion: z.string().optional().default(CURRENT_TERMS_VERSION),
-  privacyPolicyVersion: z.string().optional().default(CURRENT_PRIVACY_POLICY_VERSION),
+  privacyPolicyVersion: z
+    .string()
+    .optional()
+    .default(CURRENT_PRIVACY_POLICY_VERSION),
 });
 
 export const submitAccessRequestBodySchema = z.object({
@@ -27,9 +30,17 @@ export const requestIdParamSchema = z.object({
 });
 
 export const rejectAccessRequestBodySchema = z.object({
-  reason: z.string().trim().max(500, "Rejection reason cannot exceed 500 characters").optional(),
+  reason: z
+    .string()
+    .trim()
+    .max(500, "Rejection reason cannot exceed 500 characters")
+    .optional(),
 });
 
-export type AcceptTermsBody = z.infer<typeof acceptTermsBodySchema>;
-export type SubmitAccessRequestBody = z.infer<typeof submitAccessRequestBodySchema>;
-export type ListAccessRequestsQuery = z.infer<typeof listAccessRequestsQuerySchema>;
+export type AcceptTermsBody = z.input<typeof acceptTermsBodySchema>;
+export type SubmitAccessRequestBody = z.infer<
+  typeof submitAccessRequestBodySchema
+>;
+export type ListAccessRequestsQuery = z.infer<
+  typeof listAccessRequestsQuerySchema
+>;

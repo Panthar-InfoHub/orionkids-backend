@@ -13,7 +13,11 @@ import {
   rejectAccessRequest,
 } from "../src/services/admin.service.js";
 import { CURRENT_TERMS_VERSION } from "../src/validators/registration.schema.js";
-import { ForbiddenError, ConflictError, ValidationError } from "../src/utils/errors.js";
+import {
+  ForbiddenError,
+  ConflictError,
+  ValidationError,
+} from "../src/utils/errors.js";
 
 describe("Production Authentication, Terms Acceptance, Admin Approval & Registration State Machine", () => {
   const timestamp = Date.now();
@@ -102,17 +106,41 @@ describe("Production Authentication, Terms Acceptance, Admin Approval & Registra
     // Cleanup created test records
     await prisma.accessRequest.deleteMany({
       where: {
-        userId: { in: [adminId, newUser1Id, newUser2Id, existingActiveUserId, restrictedUserId] },
+        userId: {
+          in: [
+            adminId,
+            newUser1Id,
+            newUser2Id,
+            existingActiveUserId,
+            restrictedUserId,
+          ],
+        },
       },
     });
     await prisma.termsAcceptance.deleteMany({
       where: {
-        userId: { in: [adminId, newUser1Id, newUser2Id, existingActiveUserId, restrictedUserId] },
+        userId: {
+          in: [
+            adminId,
+            newUser1Id,
+            newUser2Id,
+            existingActiveUserId,
+            restrictedUserId,
+          ],
+        },
       },
     });
     await prisma.user.deleteMany({
       where: {
-        id: { in: [adminId, newUser1Id, newUser2Id, existingActiveUserId, restrictedUserId] },
+        id: {
+          in: [
+            adminId,
+            newUser1Id,
+            newUser2Id,
+            existingActiveUserId,
+            restrictedUserId,
+          ],
+        },
       },
     });
   });
@@ -158,8 +186,8 @@ describe("Production Authentication, Terms Acceptance, Admin Approval & Registra
       where: { userId: newUser1Id },
     });
     assert.equal(auditRecords.length, 1);
-    assert.equal(auditRecords[0].termsVersion, CURRENT_TERMS_VERSION);
-    assert.equal(auditRecords[0].ipAddress, "127.0.0.1");
+    assert.equal(auditRecords[0]!.termsVersion, CURRENT_TERMS_VERSION);
+    assert.equal(auditRecords[0]!.ipAddress, "127.0.0.1");
   });
 
   it("4. Refreshing after accepting terms does not ask to accept again", async () => {
@@ -175,13 +203,14 @@ describe("Production Authentication, Terms Acceptance, Admin Approval & Registra
       notes: "Requesting access for 2nd grade student.",
     });
 
-    assert.ok(res.request.id);
-    assert.equal(res.request.status, "PENDING");
+    assert.ok(res.request);
+    assert.ok(res.request!.id);
+    assert.equal(res.request!.status, "PENDING");
     assert.equal(res.status.accessRequestStatus, "PENDING");
     assert.equal(res.status.accountStatus, "PENDING");
     assert.equal(res.status.destination, "/access-pending");
 
-    request1Id = res.request.id;
+    request1Id = res.request!.id;
   });
 
   it("6. Duplicate pending access request is strictly prevented", async () => {
@@ -254,7 +283,9 @@ describe("Production Authentication, Terms Acceptance, Admin Approval & Registra
     assert.equal(result.user.reviewedById, adminId);
 
     // Verify in database
-    const dbUser = await prisma.user.findUniqueOrThrow({ where: { id: newUser1Id } });
+    const dbUser = await prisma.user.findUniqueOrThrow({
+      where: { id: newUser1Id },
+    });
     assert.equal(dbUser.status, "ACTIVE");
   });
 
@@ -298,7 +329,8 @@ describe("Production Authentication, Terms Acceptance, Admin Approval & Registra
 
     // User 2 submits request
     const sub = await submitUserAccessRequest(newUser2Id, {});
-    request2Id = sub.request.id;
+    assert.ok(sub.request);
+    request2Id = sub.request!.id;
 
     // Admin rejects request with reason
     const rej = await rejectAccessRequest(
@@ -308,13 +340,19 @@ describe("Production Authentication, Terms Acceptance, Admin Approval & Registra
     );
 
     assert.equal(rej.request.status, "REJECTED");
-    assert.equal(rej.request.rejectionReason, "Incomplete school documentation.");
+    assert.equal(
+      rej.request.rejectionReason,
+      "Incomplete school documentation."
+    );
 
     // User status check
     const status = await getRegistrationStatus(newUser2Id);
     assert.equal(status.accessRequestStatus, "REJECTED");
     assert.equal(status.destination, "/access-rejected");
-    assert.equal(status.accessRequest?.rejectionReason, "Incomplete school documentation.");
+    assert.equal(
+      status.accessRequest?.rejectionReason,
+      "Incomplete school documentation."
+    );
   });
 
   // --- COMPATIBILITY & SECURITY CHECKS ---

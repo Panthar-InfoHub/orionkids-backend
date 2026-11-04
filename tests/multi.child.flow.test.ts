@@ -116,7 +116,11 @@ describe("Multi-Child Parent Accounts, Isolated Quests & Reports Test Suite", ()
 
   it("3. adding a second child does not overwrite the first child or change parent account", async () => {
     const children = await listChildren(parentAId);
-    assert.equal(children.length, 2, "Parent A must have exactly 2 registered children");
+    assert.equal(
+      children.length,
+      2,
+      "Parent A must have exactly 2 registered children"
+    );
 
     const names = children.map((c) => c.childName);
     assert.ok(names.includes("Aarav Sharma"));
@@ -187,7 +191,11 @@ describe("Multi-Child Parent Accounts, Isolated Quests & Reports Test Suite", ()
     assert.ok(session2.id);
     assert.equal(session2.userId, parentAId);
     assert.equal(session2.childProfileId, childA2Id);
-    assert.notEqual(session2.id, sessionChildA1Id, "Sessions between children must never collide");
+    assert.notEqual(
+      session2.id,
+      sessionChildA1Id,
+      "Sessions between children must never collide"
+    );
     sessionChildA2Id = session2.id;
   });
 
@@ -210,15 +218,19 @@ describe("Multi-Child Parent Accounts, Isolated Quests & Reports Test Suite", ()
 
     // 2. Start and complete Stroop Level 1 for Child A1
     await startLevelAttempt(parentAId, sessionChildA1Id, "stroop", 1);
-    const completedResult = await completeLevelAttempt(parentAId, sessionChildA1Id, {
-      gameKey: "stroop",
-      levelNumber: 1,
-      attemptNumber: 1,
-      totalTrials: 10,
-      correctTrials: 10,
-      accuracy: 100,
-      durationMs: 5000,
-    });
+    const completedResult = await completeLevelAttempt(
+      parentAId,
+      sessionChildA1Id,
+      {
+        gameKey: "stroop",
+        levelNumber: 1,
+        attemptNumber: 1,
+        totalTrials: 10,
+        correctTrials: 10,
+        accuracy: 100,
+        durationMs: 5000,
+      }
+    );
 
     assert.equal(completedResult.currentGame, 1);
     assert.equal(completedResult.currentLevel, 2);
@@ -252,9 +264,9 @@ describe("Multi-Child Parent Accounts, Isolated Quests & Reports Test Suite", ()
     // Check Stroop game levels
     const stroopGame = progressA1.matrix.find((g) => g.key === "stroop");
     assert.ok(stroopGame);
-    assert.equal(stroopGame.levels[0].status, "COMPLETED");
-    assert.equal(stroopGame.levels[1].status, "IN_PROGRESS");
-    assert.equal(stroopGame.levels[2].status, "LOCKED");
+    assert.equal(stroopGame.levels[0]!.status, "COMPLETED");
+    assert.equal(stroopGame.levels[1]!.status, "IN_PROGRESS");
+    assert.equal(stroopGame.levels[2]!.status, "LOCKED");
 
     // Child A2 progress is 0
     const progressA2 = await getChildProgress(parentAId, childA2Id);
@@ -265,11 +277,11 @@ describe("Multi-Child Parent Accounts, Isolated Quests & Reports Test Suite", ()
   it("13. getChildQuestSessions lists only sessions belonging to that child", async () => {
     const sessionsA1 = await getChildQuestSessions(parentAId, childA1Id);
     assert.equal(sessionsA1.length, 1);
-    assert.equal(sessionsA1[0].id, sessionChildA1Id);
+    assert.equal(sessionsA1[0]!.id, sessionChildA1Id);
 
     const sessionsA2 = await getChildQuestSessions(parentAId, childA2Id);
     assert.equal(sessionsA2.length, 1);
-    assert.equal(sessionsA2[0].id, sessionChildA2Id);
+    assert.equal(sessionsA2[0]!.id, sessionChildA2Id);
   });
 
   it("14. Updating Child A1 profile does not affect Child A2", async () => {

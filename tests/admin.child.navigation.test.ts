@@ -163,7 +163,7 @@ describe("Admin Dashboard Child-First Navigation & Isolation Verification Suite"
             questSessionId: sessionA1CompletedId,
             userId: parentAId,
             gameId: g + 1,
-            gameKey: games[g],
+            gameKey: games[g]!,
             levelNumber: l,
             attemptNumber: 1,
             status: "COMPLETED",
@@ -275,10 +275,10 @@ describe("Admin Dashboard Child-First Navigation & Isolation Verification Suite"
     const children = await getUserChildren(parentAId);
     assert.equal(children.length, 3);
     // All 3 children are visible as separate cards
-    assert.equal(children[0].childName, "Aanya Sahu");
-    assert.equal(children[1].childName, "Aanya Sahu");
-    assert.equal(children[2].childName, "Aarav Sahu");
-    assert.notEqual(children[0].id, children[1].id);
+    assert.equal(children[0]!.childName, "Aanya Sahu");
+    assert.equal(children[1]!.childName, "Aanya Sahu");
+    assert.equal(children[2]!.childName, "Aarav Sahu");
+    assert.notEqual(children[0]!.id, children[1]!.id);
   });
 
   it("Scenario 3, 4 & 5: Selecting Child 1 displays ONLY Child 1 sessions and analytics", async () => {
@@ -321,9 +321,9 @@ describe("Admin Dashboard Child-First Navigation & Isolation Verification Suite"
       limit: 10,
     });
     assert.equal(c2Sessions.sessions.length, 1);
-    assert.equal(c2Sessions.sessions[0].id, sessionA2InProgressId);
+    assert.equal(c2Sessions.sessions[0]!.id, sessionA2InProgressId);
     // Never mixes Child A1 sessions into Child A2
-    assert.notEqual(c2Sessions.sessions[0].id, sessionA1CompletedId);
+    assert.notEqual(c2Sessions.sessions[0]!.id, sessionA1CompletedId);
   });
 
   it("Scenario 7: Session filters work accurately for child sessions", async () => {
@@ -334,16 +334,20 @@ describe("Admin Dashboard Child-First Navigation & Isolation Verification Suite"
       status: "COMPLETED",
     });
     assert.equal(completedRes.sessions.length, 1);
-    assert.equal(completedRes.sessions[0].id, sessionA1CompletedId);
+    assert.equal(completedRes.sessions[0]!.id, sessionA1CompletedId);
 
     // Child A1 in-progress sessions
-    const inProgressRes = await getUserChildQuestSessions(parentAId, childA1Id, {
-      page: 1,
-      limit: 10,
-      status: "IN_PROGRESS",
-    });
+    const inProgressRes = await getUserChildQuestSessions(
+      parentAId,
+      childA1Id,
+      {
+        page: 1,
+        limit: 10,
+        status: "IN_PROGRESS",
+      }
+    );
     assert.equal(inProgressRes.sessions.length, 1);
-    assert.equal(inProgressRes.sessions[0].id, sessionA1InProgressId);
+    assert.equal(inProgressRes.sessions[0]!.id, sessionA1InProgressId);
 
     // Child A1 abandoned sessions
     const abandonedRes = await getUserChildQuestSessions(parentAId, childA1Id, {

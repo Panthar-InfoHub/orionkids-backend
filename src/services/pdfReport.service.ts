@@ -28,7 +28,12 @@ const PAGE_HEIGHT = 841.89; // Standard A4 height
 const MARGIN = 40;
 const CONTENT_WIDTH = PAGE_WIDTH - MARGIN * 2;
 
-function wrapText(text: string, font: PDFFont, fontSize: number, maxWidth: number): string[] {
+function wrapText(
+  text: string,
+  font: PDFFont,
+  fontSize: number,
+  maxWidth: number
+): string[] {
   const words = text.split(/\s+/);
   const lines: string[] = [];
   let currentLine = "";
@@ -47,7 +52,9 @@ function wrapText(text: string, font: PDFFont, fontSize: number, maxWidth: numbe
   return lines;
 }
 
-export async function generateReportPdf(data: PdfReportData): Promise<Uint8Array> {
+export async function generateReportPdf(
+  data: PdfReportData
+): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
   const fontRegular = await doc.embedFont(StandardFonts.Helvetica);
   const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
@@ -367,7 +374,8 @@ export async function generateReportPdf(data: PdfReportData): Promise<Uint8Array
       color: TEXT_DARK,
     });
 
-    const accStr = g.averageAccuracy !== null ? `${Math.round(g.averageAccuracy)}%` : "—";
+    const accStr =
+      g.averageAccuracy !== null ? `${Math.round(g.averageAccuracy)}%` : "—";
     currentPage.drawText(accStr, {
       x: MARGIN + 350,
       y: y - 14,
@@ -376,7 +384,9 @@ export async function generateReportPdf(data: PdfReportData): Promise<Uint8Array
       color: BRAND_NAVY,
     });
 
-    const rtStr = g.averageReactionTimeMs ? `${(g.averageReactionTimeMs / 1000).toFixed(1)}s` : "—";
+    const rtStr = g.averageReactionTimeMs
+      ? `${(g.averageReactionTimeMs / 1000).toFixed(1)}s`
+      : "—";
     currentPage.drawText(rtStr, {
       x: MARGIN + 430,
       y: y - 14,
@@ -406,7 +416,14 @@ export async function generateReportPdf(data: PdfReportData): Promise<Uint8Array
   const colWidth = CONTENT_WIDTH / 6;
 
   // Draw 6 columns for the 6 games, each having 3 level boxes
-  const uniqueGames = ["stroop", "card-flip", "pattern", "odd-one-out", "rule-discovery", "story-sequencing"];
+  const uniqueGames = [
+    "stroop",
+    "card-flip",
+    "pattern",
+    "odd-one-out",
+    "rule-discovery",
+    "story-sequencing",
+  ];
   const gameLabels: Record<string, string> = {
     stroop: "Stroop",
     "card-flip": "Card Flip",
@@ -443,7 +460,9 @@ export async function generateReportPdf(data: PdfReportData): Promise<Uint8Array
 
     // 3 level rows inside this column
     for (let lvl = 1; lvl <= 3; lvl++) {
-      const match = levels.find((l) => l.gameKey === gKey && l.levelNumber === lvl);
+      const match = levels.find(
+        (l) => l.gameKey === gKey && l.levelNumber === lvl
+      );
       const ly = y - 16 - lvl * 16;
 
       currentPage.drawRectangle({
@@ -456,7 +475,10 @@ export async function generateReportPdf(data: PdfReportData): Promise<Uint8Array
         borderWidth: 0.5,
       });
 
-      const accText = match?.accuracy !== null && match?.accuracy !== undefined ? `${match.accuracy}%` : "Done";
+      const accText =
+        match?.accuracy !== null && match?.accuracy !== undefined
+          ? `${match.accuracy}%`
+          : "Done";
       currentPage.drawText(`L${lvl}: ${accText}`, {
         x: gx + 4,
         y: ly + 4,
@@ -586,7 +608,12 @@ export async function generateReportPdf(data: PdfReportData): Promise<Uint8Array
       color: BRAND_NAVY,
     });
 
-    const descLines = wrapText(rec.description, fontRegular, 7.5, CONTENT_WIDTH - 20);
+    const descLines = wrapText(
+      rec.description,
+      fontRegular,
+      7.5,
+      CONTENT_WIDTH - 20
+    );
     if (descLines[0]) {
       currentPage.drawText(descLines[0], {
         x: MARGIN + 10,
@@ -659,4 +686,3 @@ export async function generateReportPdf(data: PdfReportData): Promise<Uint8Array
 
   return await doc.save();
 }
-

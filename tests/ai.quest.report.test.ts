@@ -204,15 +204,25 @@ describe("AI-Powered Quest Report Generation & Security Verification Suite", () 
     assert.ok(ai.reportTitle);
     assert.ok(ai.overallPerformanceSummary);
     assert.equal(ai.gameWiseAnalysis.length, 6, "Must contain all 6 games");
-    assert.equal(ai.levelWisePerformance.length, 18, "Must contain all 18 levels");
+    assert.equal(
+      ai.levelWisePerformance.length,
+      18,
+      "Must contain all 18 levels"
+    );
     assert.ok(Array.isArray(ai.observedStrengths));
     assert.ok(Array.isArray(ai.parentRecommendations));
     assert.ok(ai.dataLimitations);
   });
 
   it("is idempotent: duplicate completion calls return the saved report without creating duplicates", async () => {
-    const reportFirst = await generateOrGetReport(parent1Id, completedSessionId);
-    const reportSecond = await generateOrGetReport(parent1Id, completedSessionId);
+    const reportFirst = await generateOrGetReport(
+      parent1Id,
+      completedSessionId
+    );
+    const reportSecond = await generateOrGetReport(
+      parent1Id,
+      completedSessionId
+    );
 
     assert.equal(reportFirst.id, reportSecond.id);
 
@@ -243,7 +253,11 @@ describe("AI-Powered Quest Report Generation & Security Verification Suite", () 
   });
 
   it("allows the authorized parent to download the report as a valid binary PDF", async () => {
-    const pdfBytes = await getReportPdfBuffer(parent1Id, completedSessionId, false);
+    const pdfBytes = await getReportPdfBuffer(
+      parent1Id,
+      completedSessionId,
+      false
+    );
 
     assert.ok(pdfBytes instanceof Uint8Array);
     assert.ok(pdfBytes.length > 500, "PDF size must be substantial");
@@ -255,7 +269,12 @@ describe("AI-Powered Quest Report Generation & Security Verification Suite", () 
 
   it("allows administrators to view, list, and download reports for authorized children", async () => {
     // 1. Admin can access report directly
-    const report = await generateOrGetReport(adminId, completedSessionId, false, true);
+    const report = await generateOrGetReport(
+      adminId,
+      completedSessionId,
+      false,
+      true
+    );
     assert.ok(report);
     assert.equal(report.childName, "Alex Star");
 
@@ -273,7 +292,9 @@ describe("AI-Powered Quest Report Generation & Security Verification Suite", () 
     });
 
     assert.ok(listResult.reports.length >= 1);
-    const found = listResult.reports.find((r) => r.questSessionId === completedSessionId);
+    const found = listResult.reports.find(
+      (r) => r.questSessionId === completedSessionId
+    );
     assert.ok(found);
     assert.equal(found?.childName, "Alex Star");
     assert.equal(found?.status, "GENERATED");
@@ -291,4 +312,3 @@ describe("AI-Powered Quest Report Generation & Security Verification Suite", () 
     assert.equal(count, 1);
   });
 });
-

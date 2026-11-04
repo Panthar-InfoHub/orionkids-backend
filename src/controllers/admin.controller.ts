@@ -120,9 +120,7 @@ export async function getUserSessionReportController(
     res,
     200,
     result,
-    result.hasReport
-      ? "Assessment report retrieved"
-      : result.message
+    result.hasReport ? "Assessment report retrieved" : result.message
   );
 }
 
@@ -134,7 +132,6 @@ export async function updateUserStatusController(req: Request, res: Response) {
   const updatedUser = await setUserStatus(adminId, id, body);
   sendSuccess(res, 200, updatedUser, "User status updated successfully");
 }
-
 
 export async function getUserChildDetailController(
   req: Request,
@@ -200,9 +197,7 @@ export async function getUserChildSessionReportController(
     res,
     200,
     result,
-    result.hasReport
-      ? "Assessment report retrieved"
-      : result.message
+    result.hasReport ? "Assessment report retrieved" : result.message
   );
 }
 
@@ -221,7 +216,13 @@ export async function listAccessRequestsController(
 ) {
   const query = listAccessRequestsQuerySchema.parse(req.query);
   const result = await listAccessRequests(query);
-  sendSuccess(res, 200, result.requests, "Access requests retrieved", result.meta);
+  sendSuccess(
+    res,
+    200,
+    result.requests,
+    "Access requests retrieved",
+    result.meta
+  );
 }
 
 export async function approveAccessRequestController(
@@ -275,7 +276,13 @@ export async function adminDownloadReportPdfController(
 export async function adminListReportsController(req: Request, res: Response) {
   const query = listReportsQuerySchema.parse(req.query);
   const result = await listAllQuestReports(query);
-  sendSuccess(res, 200, result.reports, "Quest reports retrieved successfully", result.meta);
+  sendSuccess(
+    res,
+    200,
+    result.reports,
+    "Quest reports retrieved successfully",
+    result.meta
+  );
 }
 
 export async function getAdminSessionReportController(

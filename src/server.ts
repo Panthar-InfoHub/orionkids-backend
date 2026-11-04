@@ -26,7 +26,14 @@ function shutdown(signal: string, exitCode = 0): void {
   server.close(async (err) => {
     if (err) logger.error({ err }, "Error while closing HTTP server");
 
-    await prisma.$disconnect();
+    server.closeIdleConnections?.();
+
+    try {
+      await prisma.$disconnect();
+    } catch (disconnectErr) {
+      logger.error({ err: disconnectErr }, "Error disconnecting Prisma");
+    }
+
     logger.info("Shutdown complete");
     process.exit(err ? 1 : exitCode);
   });
@@ -49,5 +56,7 @@ process.on("unhandledRejection", (reason) => {
 
 process.on("uncaughtException", (err) => {
   logger.fatal({ err }, "Uncaught exception, process state is unreliable");
-  process.exit(1);
+  setTimeout(() => {
+    process.exit(1);
+  }, 200).unref();
 });

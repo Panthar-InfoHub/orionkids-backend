@@ -15,6 +15,7 @@ import {
   getChildQuestSessions,
   getChildReports,
   listAllParentReports,
+  deleteChildProfile,
 } from "../services/child.service.js";
 import { getReportPdfBuffer } from "../services/quest.service.js";
 
@@ -63,7 +64,12 @@ export async function getChildProgressController(req: Request, res: Response) {
   const userId = getUserId(req);
   const { childId } = childIdParamSchema.parse(req.params);
   const progress = await getChildProgress(userId, childId);
-  sendSuccess(res, 200, progress, "Child progress summary retrieved successfully");
+  sendSuccess(
+    res,
+    200,
+    progress,
+    "Child progress summary retrieved successfully"
+  );
 }
 
 export async function getChildQuestSessionsController(
@@ -73,7 +79,12 @@ export async function getChildQuestSessionsController(
   const userId = getUserId(req);
   const { childId } = childIdParamSchema.parse(req.params);
   const sessions = await getChildQuestSessions(userId, childId);
-  sendSuccess(res, 200, sessions, "Child quest sessions retrieved successfully");
+  sendSuccess(
+    res,
+    200,
+    sessions,
+    "Child quest sessions retrieved successfully"
+  );
 }
 
 export async function getChildReportsController(req: Request, res: Response) {
@@ -83,10 +94,18 @@ export async function getChildReportsController(req: Request, res: Response) {
   sendSuccess(res, 200, reports, "Child reports retrieved successfully");
 }
 
-export async function listAllParentReportsController(req: Request, res: Response) {
+export async function listAllParentReportsController(
+  req: Request,
+  res: Response
+) {
   const userId = getUserId(req);
   const reports = await listAllParentReports(userId);
-  sendSuccess(res, 200, reports, "All parent child reports retrieved successfully");
+  sendSuccess(
+    res,
+    200,
+    reports,
+    "All parent child reports retrieved successfully"
+  );
 }
 
 export async function downloadChildSessionReportPdfController(
@@ -96,7 +115,12 @@ export async function downloadChildSessionReportPdfController(
   const userId = getUserId(req);
   const { childId } = childIdParamSchema.parse(req.params);
   const rawSessionId = req.params.sessionId;
-  const sessionId = typeof rawSessionId === "string" ? rawSessionId : Array.isArray(rawSessionId) ? rawSessionId[0] : "";
+  const sessionId =
+    typeof rawSessionId === "string"
+      ? rawSessionId
+      : Array.isArray(rawSessionId)
+        ? rawSessionId[0]
+        : "";
   if (!sessionId) {
     res.status(400).json({ error: "Session ID is required" });
     return;
@@ -118,4 +142,12 @@ export async function downloadChildSessionReportPdfController(
   );
   res.setHeader("Content-Length", pdfBuffer.byteLength);
   res.status(200).send(Buffer.from(pdfBuffer));
+}
+
+export async function deleteChildController(req: Request, res: Response) {
+  const userId = getUserId(req);
+  const { childId } = childIdParamSchema.parse(req.params);
+
+  const result = await deleteChildProfile(userId, childId);
+  sendSuccess(res, 200, result, "Child profile deleted successfully");
 }
