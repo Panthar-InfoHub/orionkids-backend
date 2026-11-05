@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { logger } from "../lib/logger.js";
 import { ForbiddenError, NotFoundError } from "../utils/errors.js";
 import type {
   CreateChildInput,
@@ -99,6 +100,16 @@ export async function createChildProfile(
       201
     );
   }
+
+  logger.info(
+    {
+      userId,
+      childProfileId: result.id,
+      childName: result.childName,
+      initialSessionId: result.initialSessionId,
+    },
+    "child.profile_created"
+  );
 
   return result;
 }
@@ -356,6 +367,15 @@ export async function updateChildProfile(
       }),
     },
   });
+
+  logger.info(
+    {
+      userId,
+      childId,
+      updatedFields: Object.keys(input),
+    },
+    "child.profile_updated"
+  );
 
   return updated;
 }
@@ -746,6 +766,8 @@ export async function deleteChildProfile(userId: string, childId: string) {
   await prisma.childProfile.delete({
     where: { id: childId },
   });
+
+  logger.info({ userId, childId }, "child.profile_deleted");
 
   return { success: true, message: "Child profile deleted successfully" };
 }

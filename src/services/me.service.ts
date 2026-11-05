@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { logger } from "../lib/logger.js";
 import { CURRENT_TERMS_VERSION } from "../validators/registration.schema.js";
 
 export async function getCurrentUserProfile(userId: string) {
@@ -75,6 +76,8 @@ export async function deleteCurrentUserAccount(userId: string) {
   await prisma.user.delete({
     where: { id: userId },
   });
+
+  logger.info({ userId }, "user.account_deleted");
 
   return {
     success: true,

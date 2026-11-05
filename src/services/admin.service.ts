@@ -1668,6 +1668,12 @@ export async function adminRegenerateReport(sessionId: string) {
     true,
     true
   );
+
+  logger.info(
+    { sessionId, targetUserId: session.userId, reportId: report.id },
+    "admin.report_regenerate_completed"
+  );
+
   return report;
 }
 

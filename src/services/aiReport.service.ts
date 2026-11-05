@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { z } from "zod";
 import { openaiApiKey, env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
+import { estimateOpenAiCostUsd } from "../config/pricing.js";
 
 import {
   CANONICAL_GAMES,
@@ -183,10 +184,21 @@ export async function generateAiReport(input: GameplayReportInput): Promise<{
   errorMessage?: string;
 }> {
   const modelToUse = env.OPENAI_REPORT_MODEL || "gpt-4o-mini";
+  const startTime = Date.now();
+
+  logger.info(
+    {
+      sessionId: input.quest.sessionId,
+      childName: input.child.childName,
+      model: modelToUse,
+    },
+    "ai_report.generation_started"
+  );
 
   if (!openaiApiKey) {
     logger.warn(
-      "[AIReportService] OPEN_AI_API_KEY is not configured. Generating rule-based fallback report."
+      { sessionId: input.quest.sessionId },
+      "ai_report.key_missing: OPEN_AI_API_KEY not configured, falling back to rule-based engine"
     );
     const fallback = generateRuleBasedReport(input);
     return {
@@ -199,6 +211,14 @@ export async function generateAiReport(input: GameplayReportInput): Promise<{
   }
 
   try {
+    logger.info(
+      {
+        sessionId: input.quest.sessionId,
+        model: modelToUse,
+      },
+      "ai_report.openai_request_initiated"
+    );
+
     const openai = new OpenAI({
       apiKey: openaiApiKey,
       timeout: 20000, // 20s timeout
@@ -221,6 +241,31 @@ export async function generateAiReport(input: GameplayReportInput): Promise<{
       temperature: 0.3,
     });
 
+    const durationMs = Date.now() - startTime;
+    const usage = completion.usage;
+    const inputTokens = usage?.prompt_tokens ?? 0;
+    const outputTokens = usage?.completion_tokens ?? 0;
+    const totalTokens = usage?.total_tokens ?? 0;
+    const estimatedCostUsd = estimateOpenAiCostUsd(
+      completion.model || modelToUse,
+      inputTokens,
+      outputTokens
+    );
+
+    logger.info(
+      {
+        sessionId: input.quest.sessionId,
+        model: completion.model || modelToUse,
+        durationMs,
+        inputTokens,
+        outputTokens,
+        totalTokens,
+        estimatedCostUsd,
+        openAiId: completion.id,
+      },
+      "ai_report.openai_request_completed"
+    );
+
     const rawContent = completion.choices[0]?.message?.content;
     if (!rawContent) {
       throw new Error("OpenAI returned empty message content");
@@ -229,17 +274,43 @@ export async function generateAiReport(input: GameplayReportInput): Promise<{
     const parsedJson = JSON.parse(rawContent);
     const validated = AiStructuredReportSchema.parse(parsedJson);
 
+    logger.info(
+      {
+        sessionId: input.quest.sessionId,
+        model: completion.model || modelToUse,
+        durationMs,
+      },
+      "ai_report.structured_report_validated"
+    );
+
     return {
       report: validated,
       modelName: completion.model || modelToUse,
       usedAi: true,
     };
   } catch (err: any) {
+    const durationMs = Date.now() - startTime;
     const errorMsg = err instanceof Error ? err.message : String(err);
+    const errorCategory =
+      err?.code || (err?.name === "APIConnectionTimeoutError" ? "TIMEOUT" : "API_ERROR");
+    const httpStatus = err?.status ?? null;
+
     logger.error(
-      { err: errorMsg },
-      "[AIReportService] OpenAI report generation failed. Using rule-based fallback."
+      {
+        sessionId: input.quest.sessionId,
+        model: modelToUse,
+        durationMs,
+        errorCategory,
+        httpStatus,
+        err: errorMsg,
+      },
+      "ai_report.openai_request_failed"
     );
+    logger.warn(
+      { sessionId: input.quest.sessionId },
+      "ai_report.falling_back_to_rule_based"
+    );
+
     const fallback = generateRuleBasedReport(input);
     return {
       report: fallback,

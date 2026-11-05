@@ -90,7 +90,8 @@ export const completeLevelSchema = z
     }
   );
 
-export type CompleteLevelInput = z.infer<typeof completeLevelSchema>;
+export type CompleteLevelInput = z.input<typeof completeLevelSchema>;
+export type CompleteLevelOutput = z.infer<typeof completeLevelSchema>;
 
 export const legacyStroopSubmitSchema = z
   .object({

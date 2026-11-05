@@ -1,10 +1,12 @@
 import express from "express";
+import { randomUUID } from "node:crypto";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import { pinoHttp } from "pino-http";
 import { env, isTest } from "./config/env.js";
 import { logger } from "./lib/logger.js";
+import { requestContextStorage } from "./lib/context.js";
 import { prisma } from "./lib/prisma.js";
 import { toNodeHandler } from "better-auth/node";
 import { auth } from "./lib/auth.js";
@@ -22,6 +24,27 @@ app.set(
   "trust proxy",
   env.TRUST_PROXY ? Number(env.TRUST_PROXY) || env.TRUST_PROXY : 1
 );
+
+// ---- Request Correlation & Context Middleware ----
+app.use((req, res, next) => {
+  const incomingId = req.headers["x-request-id"];
+  const requestId =
+    typeof incomingId === "string" && incomingId.trim()
+      ? incomingId.trim()
+      : randomUUID();
+
+  (req as any).id = requestId;
+  res.setHeader("x-request-id", requestId);
+
+  requestContextStorage.run(
+    {
+      requestId,
+      method: req.method,
+      path: req.path,
+    },
+    () => next()
+  );
+});
 
 // ---- Security ----
 app.use(helmet());
@@ -42,7 +65,16 @@ app.use(express.json({ limit: "1mb" }));
 app.use(
   pinoHttp({
     logger,
+    genReqId: (req) =>
+      (req as any).id ||
+      (req.headers["x-request-id"] as string) ||
+      randomUUID(),
     autoLogging: { ignore: (req) => req.url?.startsWith("/health") || false },
+    customLogLevel: (_req, res, err) => {
+      if (res.statusCode >= 500 || err) return "error";
+      if (res.statusCode >= 400) return "warn";
+      return "info";
+    },
   })
 );
 

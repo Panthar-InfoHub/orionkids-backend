@@ -85,7 +85,15 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
   const appError = normalizeError(err);
   const isServerError = appError.statusCode >= 500;
 
-  const logContext = { err, method: req.method, url: req.originalUrl };
+  const logContext = {
+    err,
+    statusCode: appError.statusCode,
+    code: appError.code,
+    method: req.method,
+    url: req.originalUrl,
+    details: appError.details,
+    userId: req.authCtx?.userId,
+  };
   if (isServerError) {
     logger.error(logContext, appError.message);
   } else {

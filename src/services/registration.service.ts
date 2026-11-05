@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { logger } from "../lib/logger.js";
 import {
   ForbiddenError,
   NotFoundError,
@@ -221,6 +222,11 @@ export async function acceptUserTerms(
     });
   });
 
+  logger.info(
+    { userId, termsVersion, privacyPolicyVersion },
+    "registration.terms_accepted"
+  );
+
   return getRegistrationStatus(userId);
 }
 
@@ -311,6 +317,12 @@ export async function submitUserAccessRequest(
   }
 
   const regStatus = await getRegistrationStatus(userId);
+
+  logger.info(
+    { userId, requestId: newRequest.id, notes: input.notes },
+    "registration.access_request_submitted"
+  );
+
   return {
     message: "Access request submitted successfully.",
     request: newRequest,

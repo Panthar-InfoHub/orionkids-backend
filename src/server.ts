@@ -8,6 +8,7 @@ const server = http.createServer(app);
 
 server.listen(env.PORT, () => {
   logger.info(
+    { port: env.PORT, env: env.NODE_ENV, nodeVersion: process.version },
     `Server running on http://localhost:${env.PORT} (${env.NODE_ENV})`
   );
 });
@@ -21,7 +22,7 @@ function shutdown(signal: string, exitCode = 0): void {
   if (isShuttingDown) return;
   isShuttingDown = true;
 
-  logger.info(`${signal} received, shutting down gracefully...`);
+  logger.info({ signal, exitCode }, `${signal} received, shutting down gracefully...`);
 
   server.close(async (err) => {
     if (err) logger.error({ err }, "Error while closing HTTP server");
@@ -34,7 +35,7 @@ function shutdown(signal: string, exitCode = 0): void {
       logger.error({ err: disconnectErr }, "Error disconnecting Prisma");
     }
 
-    logger.info("Shutdown complete");
+    logger.info({ signal, exitCode }, "Shutdown complete");
     process.exit(err ? 1 : exitCode);
   });
 

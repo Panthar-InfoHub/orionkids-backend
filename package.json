@@ -21,14 +21,14 @@
     "db:studio": "prisma studio",
     "admin:make": "tsx scripts/make-admin.ts",
     "user:verify": "tsx scripts/verify-user.ts",
-    "test": "NODE_ENV=test node --import tsx --test --test-concurrency=1 tests/**/*.test.ts",
+    "test": "NODE_ENV=test DATABASE_URL_TEST=\"${DATABASE_URL_TEST:-postgresql://postgres:postgres@localhost:5432/orionkids_test}\" node --import tsx --test --test-concurrency=1 tests/**/*.test.ts",
     "db:inspect": "tsx scripts/inspect-db.ts",
     "db:check-migrations": "tsx scripts/check-migrations.ts",
     "db:deploy-neon": "tsx scripts/deploy-neon-migration.ts",
     "db:verify-schema": "tsx scripts/verify-schema.ts",
     "db:deploy-terms": "tsx scripts/deploy-terms-migration.ts",
     "db:deploy-report": "tsx scripts/deploy-report-migration.ts",
-    "test:reg": "NODE_ENV=test node --import tsx --test --test-concurrency=1 tests/registration.workflow.test.ts"
+    "test:reg": "NODE_ENV=test DATABASE_URL_TEST=\"${DATABASE_URL_TEST:-postgresql://postgres:postgres@localhost:5432/orionkids_test}\" node --import tsx --test --test-concurrency=1 tests/registration.workflow.test.ts"
   },
   "keywords": [],
   "author": "",

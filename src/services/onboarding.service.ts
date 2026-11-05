@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { logger } from "../lib/logger.js";
 import { ForbiddenError, NotFoundError } from "../utils/errors.js";
 import type { SubmitOnboardingInput } from "../validators/onboarding.schema.js";
 import { idempotencyRegistry } from "../utils/idempotency.js";
@@ -98,6 +99,16 @@ export async function submitUserOnboarding(
       200
     );
   }
+
+  logger.info(
+    {
+      userId,
+      childProfileId: result.childProfile.id,
+      childName: result.childProfile.childName,
+      sessionId: result.sessionId,
+    },
+    "onboarding.submitted"
+  );
 
   return result;
 }

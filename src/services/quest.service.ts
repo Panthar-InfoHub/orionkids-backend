@@ -1,4 +1,5 @@
 import { prisma, type Prisma } from "../lib/prisma.js";
+import { logger } from "../lib/logger.js";
 import {
   ForbiddenError,
   NotFoundError,
@@ -239,6 +240,18 @@ export async function getOrCreateActiveSession(
     });
   }
 
+  logger.info(
+    {
+      sessionId: session.id,
+      childProfileId: resolvedChildId,
+      currentStage: session.currentStage,
+      currentGame: session.currentGame,
+      currentLevel: session.currentLevel,
+      status: session.status,
+    },
+    "quest.session_retrieved_or_created"
+  );
+
   return formatSessionResponse(session);
 }
 
@@ -387,6 +400,16 @@ export async function getSessionById(userId: string, sessionId: string) {
     throw new ForbiddenError("You do not own this quest session");
   }
 
+  logger.info(
+    {
+      sessionId: session.id,
+      childProfileId: session.childProfileId,
+      currentStage: session.currentStage,
+      status: session.status,
+    },
+    "quest.session_retrieved_by_id"
+  );
+
   return formatSessionResponse(session);
 }
 
@@ -475,6 +498,15 @@ export async function saveWarmUpSubmission(
     return { submission, session: updatedSession };
   });
 
+  logger.info(
+    {
+      sessionId: result.session.id,
+      currentStage: result.session.currentStage,
+      nextGameRoute: `/games/stroop?level=1&sessionId=${result.session.id}`,
+    },
+    "quest.warm_up_completed"
+  );
+
   return {
     success: true,
     sessionId: result.session.id,
@@ -501,7 +533,7 @@ export async function startLevelAttempt(
   const idempotencyKey = options?.idempotencyKey?.trim() || null;
   const isReplay = Boolean(options?.isReplay);
 
-  return prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     // 1. Concurrency lock: serialize concurrent level-start operations on the same quest session
     await tx.$queryRaw`SELECT id FROM quest_session WHERE id = ${sessionId} FOR UPDATE`;
 
@@ -603,6 +635,16 @@ export async function startLevelAttempt(
 
     // Reject skipping forward beyond authorized stage
     if (requestedOverallIndex > authorizedOverallIndex) {
+      logger.warn(
+        {
+          sessionId,
+          gameKey,
+          levelNumber,
+          authorizedGame: currentSession.currentGame,
+          authorizedLevel: currentSession.currentLevel,
+        },
+        "quest.level_locked_access_rejected"
+      );
       throw new ForbiddenError(
         `Level progression violation: Game ${requestedGameId} Level ${levelNumber} is locked. You are on Game ${currentSession.currentGame} Level ${currentSession.currentLevel}.`
       );
@@ -736,6 +778,20 @@ export async function startLevelAttempt(
       attemptNumber: created.attemptNumber,
     };
   });
+
+  logger.info(
+    {
+      sessionId,
+      gameKey,
+      levelNumber,
+      attemptId: result.attemptId,
+      attemptNumber: result.attemptNumber,
+      isReplay,
+    },
+    "quest.level_attempt_started"
+  );
+
+  return result;
 }
 
 export async function completeLevelAttempt(
@@ -759,7 +815,7 @@ export async function completeLevelAttempt(
     );
   }
 
-  return prisma.$transaction(
+  const result = await prisma.$transaction(
     async (tx) => {
       const currentSession = await tx.questSession.findUnique({
         where: { id: sessionId },
@@ -1123,6 +1179,24 @@ export async function completeLevelAttempt(
       timeout: 25000,
     }
   );
+
+  logger.info(
+    {
+      sessionId,
+      gameKey: input.gameKey,
+      levelNumber: input.levelNumber,
+      levelAttemptId: result.levelAttemptId,
+      accuracy: input.accuracy,
+      durationMs: input.durationMs,
+      nextStage: result.nextStage,
+      isQuestComplete: result.isQuestComplete,
+    },
+    result.isQuestComplete
+      ? "quest.session_completed"
+      : "quest.level_attempt_completed"
+  );
+
+  return result;
 }
 
 export async function generateOrGetReport(
@@ -1140,6 +1214,14 @@ export async function generateOrGetReport(
     if (!isAdmin && existingReport.userId !== userId) {
       throw new ForbiddenError("You do not own this quest session");
     }
+    logger.info(
+      {
+        sessionId,
+        reportId: existingReport.id,
+        modelName: existingReport.modelName,
+      },
+      "quest.report_cache_hit"
+    );
     return existingReport;
   }
 
@@ -1455,17 +1537,35 @@ export async function generateOrGetReport(
   };
 
   if (existingReport && forceRegenerate) {
-    return await prisma.questReport.update({
+    const updated = await prisma.questReport.update({
       where: { questSessionId: sessionId },
       data: reportData,
     });
+    logger.info(
+      {
+        sessionId,
+        reportId: updated.id,
+        modelName: updated.modelName,
+        overallAccuracy: updated.overallAccuracy,
+      },
+      "quest.report_regenerated_and_persisted"
+    );
+    return updated;
   }
 
   try {
     const report = await prisma.questReport.create({
       data: reportData,
     });
-
+    logger.info(
+      {
+        sessionId,
+        reportId: report.id,
+        modelName: report.modelName,
+        overallAccuracy: report.overallAccuracy,
+      },
+      "quest.report_persisted"
+    );
     return report;
   } catch (err: any) {
     if (err?.code === "P2002") {
@@ -1473,8 +1573,18 @@ export async function generateOrGetReport(
       const existing = await prisma.questReport.findUnique({
         where: { questSessionId: sessionId },
       });
-      if (existing) return existing;
+      if (existing) {
+        logger.info(
+          { sessionId, reportId: existing.id },
+          "quest.report_concurrent_duplicate_resolved"
+        );
+        return existing;
+      }
     }
+    logger.error(
+      { sessionId, err: err instanceof Error ? err.message : String(err) },
+      "quest.report_persist_failed"
+    );
     throw err;
   }
 }
@@ -1796,7 +1906,7 @@ export async function saveAttemptCheckpoint(
   attemptId: string,
   checkpoint: Record<string, any>
 ) {
-  return await prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     const session = await tx.questSession.findUnique({
       where: { id: sessionId },
     });
@@ -1860,4 +1970,15 @@ export async function saveAttemptCheckpoint(
       checkpointSavedAt: nowIso,
     };
   });
+
+  logger.debug(
+    {
+      sessionId,
+      attemptId,
+      checkpointSavedAt: result.checkpointSavedAt,
+    },
+    "quest.checkpoint_saved"
+  );
+
+  return result;
 }

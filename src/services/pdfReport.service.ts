@@ -1,4 +1,5 @@
 import { PDFDocument, rgb, StandardFonts, PDFPage, PDFFont } from "pdf-lib";
+import { logger } from "../lib/logger.js";
 import type { AiStructuredReport } from "./aiReport.service.js";
 
 export interface PdfReportData {
@@ -55,7 +56,14 @@ function wrapText(
 export async function generateReportPdf(
   data: PdfReportData
 ): Promise<Uint8Array> {
-  const doc = await PDFDocument.create();
+  const startTime = Date.now();
+  logger.info(
+    { childName: data.childName, reportGeneratedAt: data.reportGeneratedAt },
+    "pdf_report.generation_started"
+  );
+
+  try {
+    const doc = await PDFDocument.create();
   const fontRegular = await doc.embedFont(StandardFonts.Helvetica);
   const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
   const fontOblique = await doc.embedFont(StandardFonts.HelveticaOblique);
@@ -684,5 +692,28 @@ export async function generateReportPdf(
     });
   }
 
-  return await doc.save();
+    const pdfBytes = await doc.save();
+    const durationMs = Date.now() - startTime;
+    logger.info(
+      {
+        childName: data.childName,
+        pageCount: totalPages,
+        byteSize: pdfBytes.length,
+        durationMs,
+      },
+      "pdf_report.generation_completed"
+    );
+    return pdfBytes;
+  } catch (err: any) {
+    const durationMs = Date.now() - startTime;
+    logger.error(
+      {
+        childName: data.childName,
+        durationMs,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "pdf_report.generation_failed"
+    );
+    throw err;
+  }
 }

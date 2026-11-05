@@ -2,6 +2,8 @@ import type { RequestHandler } from "express";
 import { fromNodeHeaders } from "better-auth/node";
 import { auth } from "../lib/auth.js";
 import { prisma } from "../lib/prisma.js";
+import { logger } from "../lib/logger.js";
+import { setRequestContextUser } from "../lib/context.js";
 import { UnauthorizedError, ForbiddenError } from "../utils/errors.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 
@@ -12,6 +14,10 @@ export const requireAuth: RequestHandler = asyncHandler(
     });
 
     if (!session) {
+      logger.warn(
+        { path: req.path, method: req.method },
+        "auth.unauthenticated_request: Missing or invalid session"
+      );
       throw new UnauthorizedError("Not authenticated", "UNAUTHENTICATED");
     }
 
@@ -30,6 +36,11 @@ export const requireAuth: RequestHandler = asyncHandler(
         role: sessionUser.role,
         status: sessionUser.status,
       };
+      setRequestContextUser(sessionUser.id, sessionUser.role);
+      logger.debug(
+        { userId: sessionUser.id, role: sessionUser.role },
+        "auth.session_authenticated"
+      );
       return next();
     }
 
@@ -44,6 +55,10 @@ export const requireAuth: RequestHandler = asyncHandler(
     });
 
     if (!user) {
+      logger.warn(
+        { userId: session.user.id },
+        "auth.user_not_found: Session exists but user not found in database"
+      );
       throw new UnauthorizedError("User not found", "UNAUTHENTICATED");
     }
 
@@ -53,6 +68,11 @@ export const requireAuth: RequestHandler = asyncHandler(
       role: user.role,
       status: user.status,
     };
+    setRequestContextUser(user.id, user.role);
+    logger.debug(
+      { userId: user.id, role: user.role },
+      "auth.session_authenticated_from_db"
+    );
 
     next();
   }
@@ -60,10 +80,15 @@ export const requireAuth: RequestHandler = asyncHandler(
 
 export const checkAccountActive: RequestHandler = (req, _res, next) => {
   if (!req.authCtx) {
+    logger.warn("auth.missing_context: checkAccountActive called without authCtx");
     throw new UnauthorizedError("Not authenticated", "UNAUTHENTICATED");
   }
 
   if (req.authCtx.status === "RESTRICTED") {
+    logger.warn(
+      { userId: req.authCtx.userId, status: req.authCtx.status },
+      "auth.access_rejected: User account is restricted"
+    );
     throw new ForbiddenError(
       "Your account is restricted",
       "ACCOUNT_RESTRICTED"
@@ -71,6 +96,10 @@ export const checkAccountActive: RequestHandler = (req, _res, next) => {
   }
 
   if (req.authCtx.status === "PENDING") {
+    logger.warn(
+      { userId: req.authCtx.userId, status: req.authCtx.status },
+      "auth.access_rejected: User account review is pending"
+    );
     throw new ForbiddenError(
       "Your account review is pending",
       "ACCOUNT_PENDING"
@@ -82,10 +111,15 @@ export const checkAccountActive: RequestHandler = (req, _res, next) => {
 
 export const checkAdminRole: RequestHandler = (req, _res, next) => {
   if (!req.authCtx) {
+    logger.warn("auth.missing_context: checkAdminRole called without authCtx");
     throw new UnauthorizedError("Not authenticated", "UNAUTHENTICATED");
   }
 
   if (req.authCtx.role !== "ADMIN") {
+    logger.warn(
+      { userId: req.authCtx.userId, role: req.authCtx.role },
+      "auth.admin_access_denied: Non-admin attempted to access admin endpoint"
+    );
     throw new ForbiddenError("Forbidden", "FORBIDDEN");
   }
 
