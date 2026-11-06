@@ -43,6 +43,13 @@ enum ReportStatus {
   FAILED
 }
 
+enum ReportEmailStatus {
+  NOT_SENT
+  PENDING
+  SENT
+  FAILED
+}
+
 model User {
   id                    String         @id
   name                  String
@@ -243,10 +250,41 @@ model QuestReport {
   generatedAt        DateTime      @default(now())
   updatedAt          DateTime      @default(now()) @updatedAt
 
+  // Stored PDF (Cloudflare R2, private bucket)
+  pdfStorageKey      String?
+  pdfGeneratedAt     DateTime?
+
+  // Parent email delivery (Resend)
+  emailStatus        ReportEmailStatus @default(NOT_SENT)
+  emailRecipient     String?
+  emailSentAt        DateTime?
+  emailError         String?
+  emailAttempts      Int               @default(0)
+  shareLinks         ReportShareLink[]
+
   @@index([userId])
   @@index([childProfileId])
   @@index([status])
+  @@index([emailStatus])
   @@map("quest_report")
+}
+
+// Secure, expiring download links sent to parents by email.
+// Only a hash of the link token is stored, never the token itself.
+model ReportShareLink {
+  id             String      @id @default(cuid())
+  questReportId  String
+  questReport    QuestReport @relation(fields: [questReportId], references: [id], onDelete: Cascade)
+  tokenHash      String      @unique
+  recipientEmail String
+  expiresAt      DateTime
+  revokedAt      DateTime?
+  accessCount    Int         @default(0)
+  lastAccessedAt DateTime?
+  createdAt      DateTime    @default(now())
+
+  @@index([questReportId])
+  @@map("report_share_link")
 }
 
 model AccessRequest {

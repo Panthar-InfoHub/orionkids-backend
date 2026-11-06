@@ -5,6 +5,7 @@ import {
   createChildSchema,
   updateChildSchema,
   childIdParamSchema,
+  childSessionParamsSchema,
 } from "../validators/child.schema.js";
 import {
   createChildProfile,
@@ -16,6 +17,7 @@ import {
   getChildReports,
   listAllParentReports,
   deleteChildProfile,
+  resendChildReportEmail,
 } from "../services/child.service.js";
 import { getReportPdfBuffer } from "../services/quest.service.js";
 
@@ -142,6 +144,16 @@ export async function downloadChildSessionReportPdfController(
   );
   res.setHeader("Content-Length", pdfBuffer.byteLength);
   res.status(200).send(Buffer.from(pdfBuffer));
+}
+
+export async function resendChildReportEmailController(
+  req: Request,
+  res: Response
+) {
+  const userId = getUserId(req);
+  const { childId, sessionId } = childSessionParamsSchema.parse(req.params);
+  const result = await resendChildReportEmail(userId, childId, sessionId);
+  sendSuccess(res, 202, result, "Report email is being sent");
 }
 
 export async function deleteChildController(req: Request, res: Response) {

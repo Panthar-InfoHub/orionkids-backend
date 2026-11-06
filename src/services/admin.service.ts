@@ -15,6 +15,29 @@ import {
 } from "./quest.service.js";
 import type { ListAccessRequestsQuery } from "../validators/registration.schema.js";
 import {
+  effectiveEmailStatus,
+  resendReportEmail,
+} from "./reportDelivery.service.js";
+
+/**
+ * Report as returned to the admin UI: hides the internal storage path and reports a
+ * stuck "PENDING" email (10+ minutes) as FAILED so it can be resent.
+ */
+function toAdminReportView<
+  T extends {
+    pdfStorageKey?: string | null;
+    emailStatus: "NOT_SENT" | "PENDING" | "SENT" | "FAILED";
+    updatedAt: Date;
+  },
+>(report: T) {
+  const { pdfStorageKey, ...rest } = report;
+  return {
+    ...rest,
+    hasStoredPdf: Boolean(pdfStorageKey),
+    emailStatus: effectiveEmailStatus(report),
+  };
+}
+import {
   CANONICAL_GAMES,
   TOTAL_GAMES,
   LEVELS_PER_GAME,
@@ -945,7 +968,7 @@ export async function getUserSessionReport(userId: string, sessionId: string) {
   if (session.questReport) {
     return {
       hasReport: true,
-      report: session.questReport,
+      report: toAdminReportView(session.questReport),
     };
   }
 
@@ -1674,7 +1697,57 @@ export async function adminRegenerateReport(sessionId: string) {
     "admin.report_regenerate_completed"
   );
 
-  return report;
+  // generateOrGetReport has scheduled: new PDF + new email to the parent (old link revoked)
+  return toAdminReportView(report);
+}
+
+/**
+ * Admin: resend the report email for a quest session (to the child's CURRENT parent email).
+ */
+export async function adminResendReportEmail(sessionId: string) {
+  const report = await prisma.questReport.findUnique({
+    where: { questSessionId: sessionId },
+    select: { id: true },
+  });
+
+  if (!report) {
+    throw new NotFoundError("Quest assessment report not found");
+  }
+
+  return resendReportEmail(report.id);
+}
+
+/**
+ * Admin only: correct a child's parent email (e.g. the school made a typo).
+ * Does NOT send anything; the admin presses "Resend email" afterwards.
+ */
+export async function adminUpdateChildParentEmail(
+  adminId: string,
+  userId: string,
+  childProfileId: string,
+  parentEmail: string
+) {
+  const child = await prisma.childProfile.findUnique({
+    where: { id: childProfileId },
+    select: { id: true, userId: true, parentEmail: true },
+  });
+
+  if (!child || child.userId !== userId) {
+    throw new NotFoundError("Child profile not found for this user");
+  }
+
+  const updated = await prisma.childProfile.update({
+    where: { id: childProfileId },
+    data: { parentEmail },
+    select: { id: true, userId: true, childName: true, parentEmail: true, updatedAt: true },
+  });
+
+  logger.info(
+    { adminId, userId, childProfileId, changed: child.parentEmail !== parentEmail },
+    "admin.child_parent_email_updated"
+  );
+
+  return updated;
 }
 
 /**
@@ -1710,6 +1783,7 @@ export async function listAllQuestReports(query: ListReportsQuery) {
       { childName: { contains: s, mode: "insensitive" } },
       { user: { name: { contains: s, mode: "insensitive" } } },
       { user: { email: { contains: s, mode: "insensitive" } } },
+      { childProfile: { parentEmail: { contains: s, mode: "insensitive" } } },
     ];
   }
 
@@ -1741,6 +1815,7 @@ export async function listAllQuestReports(query: ListReportsQuery) {
             childName: true,
             age: true,
             selectedClass: true,
+            parentEmail: true,
           },
         },
       },
@@ -1753,8 +1828,15 @@ export async function listAllQuestReports(query: ListReportsQuery) {
       id: r.id,
       questSessionId: r.questSessionId,
       userId: r.userId,
-      parentName: r.user.name,
-      parentEmail: r.user.email,
+      // The logged-in account (in schools: the school's admin account)
+      accountName: r.user.name,
+      accountEmail: r.user.email,
+      // The parent email typed in the child's form (where the report email goes)
+      childParentEmail: r.childProfile?.parentEmail ?? null,
+      emailStatus: effectiveEmailStatus(r),
+      emailRecipient: r.emailRecipient,
+      emailSentAt: r.emailSentAt,
+      emailError: r.emailError,
       childProfileId: r.childProfileId,
       childName: r.childName,
       age: r.age,

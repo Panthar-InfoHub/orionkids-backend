@@ -22,6 +22,8 @@ import {
   adminDownloadReportPdfController,
   adminListReportsController,
   getAdminSessionReportController,
+  adminResendReportEmailController,
+  adminUpdateChildParentEmailController,
 } from "../controllers/admin.controller.js";
 import { requireAdmin } from "../middlewares/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
@@ -116,6 +118,16 @@ router.post(
 router.get(
   "/quest-sessions/:sessionId/report/pdf",
   asyncHandler(adminDownloadReportPdfController)
+);
+router.post(
+  "/quest-sessions/:sessionId/report/resend-email",
+  asyncHandler(adminResendReportEmailController)
+);
+
+// Correct a child's parent email (admin only; does not send anything by itself)
+router.patch(
+  "/users/:userId/children/:childProfileId/parent-email",
+  asyncHandler(adminUpdateChildParentEmailController)
 );
 
 // Reports administration across all children and users

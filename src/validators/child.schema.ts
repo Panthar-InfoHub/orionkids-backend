@@ -46,5 +46,10 @@ export const childIdParamSchema = z.object({
   childId: z.string().trim().min(1, "childId is required"),
 });
 
+export const childSessionParamsSchema = z.object({
+  childId: z.string().trim().min(1, "childId is required"),
+  sessionId: z.string().trim().min(1, "sessionId is required"),
+});
+
 export type CreateChildInput = z.infer<typeof createChildSchema>;
 export type UpdateChildInput = z.infer<typeof updateChildSchema>;

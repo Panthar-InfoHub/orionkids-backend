@@ -12,6 +12,7 @@ import {
   listAllParentReportsController,
   downloadChildSessionReportPdfController,
   deleteChildController,
+  resendChildReportEmailController,
 } from "../controllers/child.controller.js";
 
 const router = Router();
@@ -34,6 +35,11 @@ router.get("/:childId/reports", asyncHandler(getChildReportsController));
 router.get(
   "/:childId/quest-sessions/:sessionId/report/pdf",
   asyncHandler(downloadChildSessionReportPdfController)
+);
+router.post(
+  "/:childId/quest-sessions/:sessionId/report/resend-email",
+  requireActive,
+  asyncHandler(resendChildReportEmailController)
 );
 
 export default router;

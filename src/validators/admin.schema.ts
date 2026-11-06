@@ -105,3 +105,14 @@ export const listReportsQuerySchema = z.object({
 });
 
 export type ListReportsQuery = z.infer<typeof listReportsQuerySchema>;
+
+export const updateParentEmailBodySchema = z.object({
+  parentEmail: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .max(254, "Email is too long")
+    .email("Valid parent email is required"),
+});
+
+export type UpdateParentEmailBody = z.infer<typeof updateParentEmailBodySchema>;

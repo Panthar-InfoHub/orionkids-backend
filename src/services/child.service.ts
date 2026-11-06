@@ -9,6 +9,12 @@ import { computeSessionProgression } from "./quest.service.js";
 import { idempotencyRegistry } from "../utils/idempotency.js";
 import { assertChildOwnership } from "../utils/ownership.js";
 import {
+  collectReportPdfKeys,
+  deleteStoredPdfs,
+  effectiveEmailStatus,
+  resendReportEmail,
+} from "./reportDelivery.service.js";
+import {
   CANONICAL_GAMES,
   TOTAL_GAMES,
   LEVELS_PER_GAME,
@@ -599,6 +605,11 @@ export async function getChildQuestSessions(userId: string, childId: string) {
             overallAccuracy: true,
             totalDurationMs: true,
             generatedAt: true,
+            emailStatus: true,
+            emailRecipient: true,
+            emailSentAt: true,
+            emailError: true,
+            updatedAt: true,
           },
         },
         levelAttempts: {
@@ -641,7 +652,18 @@ export async function getChildQuestSessions(userId: string, childId: string) {
       lastActivityAt: s.lastActivityAt,
       completedAt: s.completedAt,
       hasReport: Boolean(s.questReport),
-      report: s.questReport || null,
+      report: s.questReport
+        ? {
+            id: s.questReport.id,
+            overallAccuracy: s.questReport.overallAccuracy,
+            totalDurationMs: s.questReport.totalDurationMs,
+            generatedAt: s.questReport.generatedAt,
+            emailStatus: effectiveEmailStatus(s.questReport),
+            emailRecipient: s.questReport.emailRecipient,
+            emailSentAt: s.questReport.emailSentAt,
+            emailError: s.questReport.emailError,
+          }
+        : null,
     };
   });
 }
@@ -679,6 +701,11 @@ export async function getChildReports(userId: string, childId: string) {
         modelName: true,
         schemaVersion: true,
         generatedAt: true,
+        emailStatus: true,
+        emailRecipient: true,
+        emailSentAt: true,
+        emailError: true,
+        updatedAt: true,
       },
     }),
   ]);
@@ -712,6 +739,10 @@ export async function getChildReports(userId: string, childId: string) {
     modelName: r.modelName,
     schemaVersion: r.schemaVersion,
     generatedAt: r.generatedAt,
+    emailStatus: effectiveEmailStatus(r),
+    emailRecipient: r.emailRecipient,
+    emailSentAt: r.emailSentAt,
+    emailError: r.emailError,
   }));
 }
 
@@ -763,11 +794,64 @@ export async function listAllParentReports(userId: string) {
 export async function deleteChildProfile(userId: string, childId: string) {
   await assertChildOwnership(userId, childId);
 
-  await prisma.childProfile.delete({
-    where: { id: childId },
+  // This child's reports. (Existing behaviour is kept: report rows are NOT deleted with the child,
+  // their childProfileId is just set to null.) Collect them BEFORE the child row disappears.
+  const reportWhere = {
+    userId,
+    OR: [{ childProfileId: childId }, { questSession: { childProfileId: childId } }],
+  };
+  const pdfKeys = await collectReportPdfKeys(reportWhere);
+  const reportIds = (
+    await prisma.questReport.findMany({ where: reportWhere, select: { id: true } })
+  ).map((r) => r.id);
+
+  await prisma.$transaction(async (tx) => {
+    // Emailed links must stop working once the child is deleted
+    if (reportIds.length > 0) {
+      await tx.reportShareLink.updateMany({
+        where: { questReportId: { in: reportIds }, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      await tx.questReport.updateMany({
+        where: { id: { in: reportIds } },
+        data: { pdfStorageKey: null, pdfGeneratedAt: null },
+      });
+    }
+    await tx.childProfile.delete({
+      where: { id: childId },
+    });
   });
 
-  logger.info({ userId, childId }, "child.profile_deleted");
+  // Remove the stored PDFs (failures are logged, never block the deletion)
+  await deleteStoredPdfs(pdfKeys);
+
+  logger.info({ userId, childId, pdfsRemoved: pdfKeys.length }, "child.profile_deleted");
 
   return { success: true, message: "Child profile deleted successfully" };
+}
+
+/**
+ * School/parent account: resend the report email for one of THEIR child's quest sessions.
+ */
+export async function resendChildReportEmail(
+  userId: string,
+  childId: string,
+  sessionId: string
+) {
+  await assertChildOwnership(userId, childId);
+
+  const report = await prisma.questReport.findFirst({
+    where: {
+      questSessionId: sessionId,
+      userId,
+      OR: [{ childProfileId: childId }, { questSession: { childProfileId: childId } }],
+    },
+    select: { id: true },
+  });
+
+  if (!report) {
+    throw new NotFoundError("Quest assessment report not found for this child");
+  }
+
+  return resendReportEmail(report.id);
 }

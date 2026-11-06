@@ -21,11 +21,12 @@ import type {
 import { GAME_KEY_TO_ID, GAME_ID_TO_KEY } from "../validators/quest.schema.js";
 import {
   generateAiReport,
-  generateRuleBasedReport,
   type GameplayReportInput,
-  type AiStructuredReport,
 } from "./aiReport.service.js";
-import { generateReportPdf } from "./pdfReport.service.js";
+import {
+  getReportPdfBytes,
+  scheduleReportDelivery,
+} from "./reportDelivery.service.js";
 
 /**
  * Helper to compute the authoritative progression stage from a session and its completed attempts.
@@ -1541,6 +1542,8 @@ export async function generateOrGetReport(
       where: { questSessionId: sessionId },
       data: reportData,
     });
+    // Regenerated: rebuild the stored PDF and email the parent a new link (old link revoked)
+    scheduleReportDelivery(updated.id, "REGENERATED");
     logger.info(
       {
         sessionId,
@@ -1557,6 +1560,9 @@ export async function generateOrGetReport(
     const report = await prisma.questReport.create({
       data: reportData,
     });
+    // New report: store the PDF and email the parent in the background.
+    // Only here (never for an existing/concurrently-created report), so no duplicate emails.
+    scheduleReportDelivery(report.id, "CREATED");
     logger.info(
       {
         sessionId,
@@ -1617,74 +1623,9 @@ export async function getReportPdfBuffer(
     );
   }
 
-  let structuredAi = report.aiReport as AiStructuredReport | null;
-  if (!structuredAi) {
-    // Generate authoritative structured representation from existing saved report fields
-    structuredAi = generateRuleBasedReport({
-      child: {
-        childName: report.childName,
-        age: report.age,
-        selectedClass: report.selectedClass,
-        school: report.school,
-      },
-      quest: {
-        sessionId: report.questSessionId,
-        startedAt: report.questSession.startedAt.toISOString(),
-        completedAt: report.questSession.completedAt
-          ? report.questSession.completedAt.toISOString()
-          : null,
-        totalLevelsCompleted: 18,
-        overallAccuracy: report.overallAccuracy,
-        totalDurationMs: report.totalDurationMs,
-      },
-      warmUp: {
-        copingStrategy:
-          (report.growthObservations as any)?.copingStrategy || "retry",
-        learningStyle:
-          (report.growthObservations as any)?.learningStyle || "both",
-        favoriteSubject:
-          (report.growthObservations as any)?.favoriteSubject || "exploration",
-        emotionalState:
-          (report.growthObservations as any)?.emotionalState || "happy",
-      },
-      games: CANONICAL_GAMES.map((cg) => {
-        const gs = (report.gameSummaries as any)?.[cg.key] || {};
-        return {
-          gameId: cg.id,
-          gameKey: cg.key,
-          gameName: cg.name,
-          domain: cg.domain,
-          levelsCompleted: gs.levelsCompleted ?? 3,
-          averageAccuracy: gs.averageAccuracy ?? null,
-          averageReactionTimeMs: gs.averageReactionTimeMs ?? null,
-          levels: [1, 2, 3].map((lvl) => ({
-            levelNumber: lvl,
-            attemptNumber: 1,
-            status: "COMPLETED",
-            totalTrials: null,
-            correctTrials: null,
-            accuracy: gs.averageAccuracy ?? null,
-            durationMs: null,
-            averageReactionTimeMs: gs.averageReactionTimeMs ?? null,
-          })),
-        };
-      }),
-    });
-  }
-
-  return await generateReportPdf({
-    childName: report.childName,
-    age: report.age,
-    selectedClass: report.selectedClass,
-    school: report.school,
-    questCompletedAt: report.questSession.completedAt
-      ? report.questSession.completedAt.toISOString()
-      : null,
-    reportGeneratedAt: report.generatedAt.toISOString(),
-    overallAccuracy: report.overallAccuracy,
-    totalDurationMs: report.totalDurationMs,
-    aiReport: structuredAi,
-  });
+  // Serves the stored R2 copy (the same PDF the parent's email link opens);
+  // stores it first if missing. Never sends an email.
+  return await getReportPdfBytes(report);
 }
 
 interface FormattableSession {

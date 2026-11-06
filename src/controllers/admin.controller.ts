@@ -21,6 +21,7 @@ import {
   userChildSessionParamsSchema,
   sessionIdParamSchema,
   listReportsQuerySchema,
+  updateParentEmailBodySchema,
 } from "../validators/admin.schema.js";
 import {
   getAdminOverview,
@@ -41,6 +42,8 @@ import {
   adminRegenerateReport,
   adminGetReportPdf,
   listAllQuestReports,
+  adminResendReportEmail,
+  adminUpdateChildParentEmail,
 } from "../services/admin.service.js";
 import { sendSuccess } from "../utils/apiResponse.js";
 import { UnauthorizedError } from "../utils/errors.js";
@@ -271,6 +274,31 @@ export async function adminDownloadReportPdfController(
   );
   res.setHeader("Content-Length", pdfBuffer.byteLength);
   res.status(200).send(Buffer.from(pdfBuffer));
+}
+
+export async function adminResendReportEmailController(
+  req: Request,
+  res: Response
+) {
+  const { sessionId } = sessionIdParamSchema.parse(req.params);
+  const result = await adminResendReportEmail(sessionId);
+  sendSuccess(res, 202, result, "Report email is being sent");
+}
+
+export async function adminUpdateChildParentEmailController(
+  req: Request,
+  res: Response
+) {
+  const adminId = getAdminUserId(req);
+  const { userId, childProfileId } = userChildParamsSchema.parse(req.params);
+  const { parentEmail } = updateParentEmailBodySchema.parse(req.body);
+  const result = await adminUpdateChildParentEmail(
+    adminId,
+    userId,
+    childProfileId,
+    parentEmail
+  );
+  sendSuccess(res, 200, result, "Parent email updated successfully");
 }
 
 export async function adminListReportsController(req: Request, res: Response) {

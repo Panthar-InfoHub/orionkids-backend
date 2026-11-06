@@ -6,6 +6,7 @@ import questRoutes, { legacyRoutes } from "./quest.routes.js";
 import childRoutes from "./child.routes.js";
 import registrationRoutes from "./registration.routes.js";
 import accessRequestRoutes from "./access-request.routes.js";
+import reportLinkRoutes from "./report-link.routes.js";
 import { requireActive } from "../middlewares/auth.js";
 
 const router = Router();
@@ -13,6 +14,8 @@ const router = Router();
 router.use("/me", meRoutes);
 router.use("/registration", registrationRoutes);
 router.use("/access-requests", accessRequestRoutes);
+// Public (no login): opens a report PDF from the secure link in the parent's email
+router.use("/reports/link", reportLinkRoutes);
 router.use("/admin", adminRoutes);
 router.use("/onboarding", onboardingRoutes);
 router.use("/children", childRoutes);
