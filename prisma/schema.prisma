@@ -50,6 +50,19 @@ enum ReportEmailStatus {
   FAILED
 }
 
+enum CustomSheetRequestStatus {
+  NEW
+  IN_PROGRESS
+  COMPLETED
+  DECLINED
+}
+
+enum CustomSheetRequesterRole {
+  PARENT
+  TEACHER
+  SCHOOL
+}
+
 model User {
   id                    String         @id
   name                  String
@@ -335,5 +348,30 @@ model IdempotencyKey {
   @@unique([userId, endpoint, key])
   @@index([createdAt])
   @@map("idempotency_key")
+}
+
+/// Public "Request Custom Sheet" form on the Printables page (no login needed).
+/// gradeLevel / sheetType hold the Printables page labels and are validated by Zod,
+/// so renaming a label never needs a migration.
+model CustomSheetRequest {
+  id               String                   @id @default(cuid())
+  name             String
+  email            String
+  requesterRole    CustomSheetRequesterRole
+  organizationName String?
+  phone            String?
+  gradeLevel       String
+  sheetType        String?
+  details          String
+  status           CustomSheetRequestStatus @default(NEW)
+  adminNote        String?
+  reviewedById     String?
+  reviewedAt       DateTime?
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+
+  @@index([status, createdAt])
+  @@index([email])
+  @@map("custom_sheet_request")
 }
 

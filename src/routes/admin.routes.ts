@@ -25,6 +25,10 @@ import {
   adminResendReportEmailController,
   adminUpdateChildParentEmailController,
 } from "../controllers/admin.controller.js";
+import {
+  adminListCustomSheetRequestsController,
+  adminUpdateCustomSheetRequestController,
+} from "../controllers/customSheet.controller.js";
 import { requireAdmin } from "../middlewares/auth.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 
@@ -142,6 +146,16 @@ router.patch(
 router.patch(
   "/access-requests/:requestId/reject",
   asyncHandler(rejectAccessRequestController)
+);
+
+// Custom printable sheet requests (submitted from the public Printables page)
+router.get(
+  "/custom-sheet-requests",
+  asyncHandler(adminListCustomSheetRequestsController)
+);
+router.patch(
+  "/custom-sheet-requests/:requestId",
+  asyncHandler(adminUpdateCustomSheetRequestController)
 );
 
 export default router;

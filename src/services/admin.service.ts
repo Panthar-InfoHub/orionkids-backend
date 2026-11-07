@@ -18,6 +18,7 @@ import {
   effectiveEmailStatus,
   resendReportEmail,
 } from "./reportDelivery.service.js";
+import { countNewCustomSheetRequests } from "./customSheet.service.js";
 
 /**
  * Report as returned to the admin UI: hides the internal storage path and reports a
@@ -57,6 +58,7 @@ export async function getAdminOverview() {
     sessionStatusGroups,
     recentCompletions,
     recentUsers,
+    newCustomSheetRequests,
   ] = await Promise.all([
     prisma.user.groupBy({
       by: ["status"],
@@ -109,6 +111,7 @@ export async function getAdminOverview() {
         createdAt: true,
       },
     }),
+    countNewCustomSheetRequests(),
   ]);
 
   let totalUsers = 0;
@@ -142,6 +145,9 @@ export async function getAdminOverview() {
     },
     children: {
       total: totalChildren,
+    },
+    customSheetRequests: {
+      new: newCustomSheetRequests,
     },
     sessions: {
       total: totalSessions,
