@@ -6,6 +6,7 @@ import {
   acceptUserTerms,
   submitUserAccessRequest,
   getMyAccessRequests,
+  ensureUserAccessRequest,
 } from "../src/services/registration.service.js";
 import {
   listAccessRequests,
@@ -147,17 +148,19 @@ describe("Production Authentication, Terms Acceptance, Admin Approval & Registra
 
   // --- STAGE 2 & 3: NEW USER & TERMS ACCEPTANCE ---
 
-  it("1. New user registration status directs to '/terms-and-conditions'", async () => {
+  it("1. New user registration auto-ensures pending request and directs to '/terms-and-conditions'", async () => {
     const status = await getRegistrationStatus(newUser1Id);
     assert.equal(status.termsAccepted, false);
-    assert.equal(status.accessRequestStatus, "NONE");
+    assert.equal(status.accessRequestStatus, "PENDING");
     assert.equal(status.destination, "/terms-and-conditions");
+    assert.ok(status.accessRequest);
+    request1Id = status.accessRequest!.id;
   });
 
   it("2. User cannot submit access request before accepting terms", async () => {
     await assert.rejects(
       async () => {
-        await submitUserAccessRequest(newUser1Id, {});
+        await submitUserAccessRequest(newUser2Id, {});
       },
       (err: any) => {
         assert.ok(err instanceof ForbiddenError);
@@ -167,7 +170,7 @@ describe("Production Authentication, Terms Acceptance, Admin Approval & Registra
     );
   });
 
-  it("3. User accepts terms successfully and state updates to '/access-request'", async () => {
+  it("3. User accepts terms successfully and state updates to '/access-pending'", async () => {
     const status = await acceptUserTerms(
       newUser1Id,
       { agree: true },
@@ -178,8 +181,8 @@ describe("Production Authentication, Terms Acceptance, Admin Approval & Registra
     assert.equal(status.currentTermsVersion, CURRENT_TERMS_VERSION);
     assert.equal(status.userTermsVersion, CURRENT_TERMS_VERSION);
     assert.ok(status.termsAcceptedAt);
-    assert.equal(status.accessRequestStatus, "NONE");
-    assert.equal(status.destination, "/access-request");
+    assert.equal(status.accessRequestStatus, "PENDING");
+    assert.equal(status.destination, "/access-pending");
 
     // Verify audit record in terms_acceptance table
     const auditRecords = await prisma.termsAcceptance.findMany({
@@ -190,27 +193,27 @@ describe("Production Authentication, Terms Acceptance, Admin Approval & Registra
     assert.equal(auditRecords[0]!.ipAddress, "127.0.0.1");
   });
 
-  it("4. Refreshing after accepting terms does not ask to accept again", async () => {
+  it("4. Refreshing after accepting terms preserves state at '/access-pending'", async () => {
     const status = await getRegistrationStatus(newUser1Id);
     assert.equal(status.termsAccepted, true);
-    assert.equal(status.destination, "/access-request");
+    assert.equal(status.destination, "/access-pending");
   });
 
   // --- STAGE 4 & 5: SUBMIT ACCESS REQUEST & PENDING SCREEN ---
 
-  it("5. User submits an access request and state becomes '/access-pending'", async () => {
+  it("5. User can add notes to their auto-ensured pending access request", async () => {
     const res = await submitUserAccessRequest(newUser1Id, {
       notes: "Requesting access for 2nd grade student.",
     });
 
     assert.ok(res.request);
     assert.ok(res.request!.id);
+    assert.equal(res.request!.id, request1Id);
+    assert.equal(res.request!.notes, "Requesting access for 2nd grade student.");
     assert.equal(res.request!.status, "PENDING");
     assert.equal(res.status.accessRequestStatus, "PENDING");
     assert.equal(res.status.accountStatus, "PENDING");
     assert.equal(res.status.destination, "/access-pending");
-
-    request1Id = res.request!.id;
   });
 
   it("6. Duplicate pending access request is strictly prevented", async () => {
@@ -325,12 +328,9 @@ describe("Production Authentication, Terms Acceptance, Admin Approval & Registra
 
   it("15. Admin rejects User 2 request with reason, routing to '/access-rejected'", async () => {
     // User 2 accepts terms first
-    await acceptUserTerms(newUser2Id, { agree: true });
-
-    // User 2 submits request
-    const sub = await submitUserAccessRequest(newUser2Id, {});
-    assert.ok(sub.request);
-    request2Id = sub.request!.id;
+    const termsRes = await acceptUserTerms(newUser2Id, { agree: true });
+    assert.ok(termsRes.accessRequest);
+    request2Id = termsRes.accessRequest!.id;
 
     // Admin rejects request with reason
     const rej = await rejectAccessRequest(
@@ -363,10 +363,10 @@ describe("Production Authentication, Terms Acceptance, Admin Approval & Registra
     assert.equal(status.destination, "/dashboard");
   });
 
-  it("17. Restricted user is blocked and routed to '/access-denied'", async () => {
+  it("17. Restricted user is blocked and routed to '/account/restricted'", async () => {
     const status = await getRegistrationStatus(restrictedUserId);
     assert.equal(status.accountStatus, "RESTRICTED");
-    assert.equal(status.destination, "/access-denied");
+    assert.equal(status.destination, "/account/restricted");
   });
 
   it("18. Active admin goes to '/admin'", async () => {
@@ -374,5 +374,88 @@ describe("Production Authentication, Terms Acceptance, Admin Approval & Registra
     assert.equal(status.role, "ADMIN");
     assert.equal(status.accountStatus, "ACTIVE");
     assert.equal(status.destination, "/admin");
+  });
+
+  it("19. Admin accounts never create access requests", async () => {
+    // ensureUserAccessRequest returns null for ADMIN
+    const req = await ensureUserAccessRequest(adminId);
+    assert.equal(req, null);
+
+    // submitUserAccessRequest throws ForbiddenError
+    await assert.rejects(
+      async () => {
+        await submitUserAccessRequest(adminId, { notes: "Admin note" });
+      },
+      (err: any) => {
+        assert.ok(err instanceof ForbiddenError);
+        assert.equal(err.code, "ADMIN_NO_ACCESS_REQUEST");
+        return true;
+      }
+    );
+  });
+
+  it("20. Admin request listing strictly excludes admin accounts", async () => {
+    const list = await listAccessRequests({
+      page: 1,
+      limit: 50,
+      status: "ALL",
+    });
+
+    const hasAdmin = list.requests.some((r) => r.user.role === "ADMIN");
+    assert.equal(hasAdmin, false, "Admin accounts must never appear in access request listing");
+  });
+
+  it("21. Existing active user login does not create duplicate requests or reset status", async () => {
+    const initialStatus = await getRegistrationStatus(existingActiveUserId);
+    assert.equal(initialStatus.accountStatus, "ACTIVE");
+
+    // Simulate login synchronization
+    const result = await ensureUserAccessRequest(existingActiveUserId, {
+      source: "auth_session_create",
+    });
+
+    // Should return existing request (or null) and never reset ACTIVE to PENDING
+    const postStatus = await getRegistrationStatus(existingActiveUserId);
+    assert.equal(postStatus.accountStatus, "ACTIVE");
+  });
+
+  it("22. Concurrent request creation safety via partial unique index", async () => {
+    const testConcurrentUserId = `reg_concurrent_${timestamp}`;
+    await prisma.user.create({
+      data: {
+        id: testConcurrentUserId,
+        email: `${testConcurrentUserId}@example.com`,
+        name: "Concurrent Test User",
+        role: "USER",
+        status: "PENDING",
+        termsAccepted: true,
+        termsVersion: CURRENT_TERMS_VERSION,
+      },
+    });
+
+    try {
+      // Run two parallel ensureUserAccessRequest calls simultaneously
+      const [res1, res2] = await Promise.all([
+        ensureUserAccessRequest(testConcurrentUserId, { source: "thread_1" }),
+        ensureUserAccessRequest(testConcurrentUserId, { source: "thread_2" }),
+      ]);
+
+      assert.ok(res1);
+      assert.ok(res2);
+      assert.equal(res1?.id, res2?.id, "Concurrent requests must resolve to the same unique request ID");
+
+      // Verify only 1 record exists in the database
+      const count = await prisma.accessRequest.count({
+        where: { userId: testConcurrentUserId, status: "PENDING" },
+      });
+      assert.equal(count, 1, "Database partial unique index must enforce exactly 1 pending request");
+    } finally {
+      await prisma.accessRequest.deleteMany({
+        where: { userId: testConcurrentUserId },
+      });
+      await prisma.user.deleteMany({
+        where: { id: testConcurrentUserId },
+      });
+    }
   });
 });

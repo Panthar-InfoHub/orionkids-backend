@@ -90,7 +90,7 @@ export const checkAccountActive: RequestHandler = (req, _res, next) => {
       "auth.access_rejected: User account is restricted"
     );
     throw new ForbiddenError(
-      "Your account is restricted",
+      "Your account access is currently restricted.",
       "ACCOUNT_RESTRICTED"
     );
   }

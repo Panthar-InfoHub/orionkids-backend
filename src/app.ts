@@ -55,6 +55,26 @@ app.use(
   })
 );
 
+// Intercept Better Auth OAuth error redirects and route to branded frontend pages
+app.get("/api/auth/error", (req, res) => {
+  const error = req.query.error as string;
+  const errorDescription = req.query.error_description as string;
+  const frontendUrl = env.CORS_ORIGINS[0] || "http://localhost:3000";
+
+  if (
+    error === "ACCOUNT_RESTRICTED" ||
+    errorDescription?.toLowerCase().includes("restricted")
+  ) {
+    return res.redirect(`${frontendUrl}/account/restricted`);
+  }
+
+  const query = new URLSearchParams();
+  if (error) query.set("error", error);
+  if (errorDescription) query.set("error_description", errorDescription);
+
+  return res.redirect(`${frontendUrl}/login?${query.toString()}`);
+});
+
 // Mount Better Auth handler BEFORE body parsers (Express 5 splat syntax)
 app.all("/api/auth/*splat", toNodeHandler(auth));
 

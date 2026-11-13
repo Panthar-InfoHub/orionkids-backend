@@ -33,7 +33,7 @@ export async function submitUserOnboarding(
 
   if (user.status === "RESTRICTED") {
     throw new ForbiddenError(
-      "Your account is restricted",
+      "Your account access is currently restricted.",
       "ACCOUNT_RESTRICTED"
     );
   }

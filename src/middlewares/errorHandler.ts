@@ -106,7 +106,7 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
       ? "Something went wrong. Please try again later."
       : appError.message;
 
-  const body: ApiErrorResponse = {
+  const body: any = {
     success: false,
     error: {
       code: appError.code,
@@ -114,6 +114,13 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
       ...(appError.details !== undefined && { details: appError.details }),
     },
   };
+
+  // Standard application-level response contract for restricted users
+  if (appError.code === "ACCOUNT_RESTRICTED") {
+    body.code = "ACCOUNT_RESTRICTED";
+    body.message = message;
+    body.data = { status: "RESTRICTED" };
+  }
 
   res.status(appError.statusCode).json(body);
 };

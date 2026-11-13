@@ -1473,23 +1473,32 @@ export async function listAccessRequests(query: ListAccessRequestsQuery) {
   const { page, limit, status, search } = query;
   const skip = (page - 1) * limit;
 
-  const where: Prisma.AccessRequestWhereInput = {};
+  // Business Rule: Normal access request queue lists regular USERs only (never ADMIN accounts)
+  const where: Prisma.AccessRequestWhereInput = {
+    user: {
+      role: "USER",
+    },
+  };
 
   if (status && status !== "ALL") {
     where.status = status;
   }
 
   if (search) {
-    where.OR = [
-      { id: { contains: search, mode: "insensitive" } },
-      { userId: { contains: search, mode: "insensitive" } },
+    where.AND = [
       {
-        user: {
-          OR: [
-            { name: { contains: search, mode: "insensitive" } },
-            { email: { contains: search, mode: "insensitive" } },
-          ],
-        },
+        OR: [
+          { id: { contains: search, mode: "insensitive" } },
+          { userId: { contains: search, mode: "insensitive" } },
+          {
+            user: {
+              OR: [
+                { name: { contains: search, mode: "insensitive" } },
+                { email: { contains: search, mode: "insensitive" } },
+              ],
+            },
+          },
+        ],
       },
     ];
   }
@@ -1523,6 +1532,11 @@ export async function listAccessRequests(query: ListAccessRequestsQuery) {
       },
     }),
   ]);
+
+  logger.info(
+    { page, limit, status: status || "ALL", total },
+    "admin.access_requests_listed"
+  );
 
   return {
     requests,

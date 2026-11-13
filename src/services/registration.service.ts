@@ -47,7 +47,7 @@ export function determineDestination(status: {
 }): string {
   // 1. Restricted
   if (status.accountStatus === "RESTRICTED") {
-    return "/access-denied";
+    return "/account/restricted";
   }
 
   // 2. Active Admin
@@ -130,7 +130,24 @@ export async function getRegistrationStatus(
     throw new NotFoundError("User not found");
   }
 
-  const latestRequest = user.accessRequests[0] || null;
+  let latestRequest = user.accessRequests[0] || null;
+
+  // Self-heal: If an eligible PENDING user has no access request, create one idempotently
+  if (!latestRequest && user.role === "USER" && user.status === "PENDING") {
+    const created = await ensureUserAccessRequest(userId, {
+      source: "get_registration_status",
+    });
+    if (created) {
+      latestRequest = {
+        id: created.id,
+        status: created.status,
+        submittedAt: created.submittedAt,
+        reviewedAt: created.reviewedAt,
+        reviewedById: created.reviewedById,
+        rejectionReason: created.rejectionReason,
+      };
+    }
+  }
   const isTermsValid =
     user.termsAccepted === true && user.termsVersion === CURRENT_TERMS_VERSION;
 
@@ -180,7 +197,7 @@ export async function acceptUserTerms(
 ): Promise<RegistrationStatusResult> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true, status: true },
+    select: { id: true, status: true, role: true },
   });
 
   if (!user) {
@@ -189,7 +206,7 @@ export async function acceptUserTerms(
 
   if (user.status === "RESTRICTED") {
     throw new ForbiddenError(
-      "Your account is restricted",
+      "Your account access is currently restricted.",
       "ACCOUNT_RESTRICTED"
     );
   }
@@ -227,7 +244,128 @@ export async function acceptUserTerms(
     "registration.terms_accepted"
   );
 
+  // If user is an eligible PENDING USER, ensure their access request is present
+  if (user.role === "USER" && user.status === "PENDING") {
+    await ensureUserAccessRequest(userId, { source: "terms_accepted" });
+  }
+
   return getRegistrationStatus(userId);
+}
+
+/**
+ * Ensures that an eligible pending USER has an active access request.
+ * Enforces business rules:
+ * - Never create requests for ADMIN accounts
+ * - Never create requests for RESTRICTED accounts
+ * - Never reset an ACTIVE user to PENDING
+ * - Never overwrite existing approved or rejected decisions
+ * - Never duplicate an existing pending request
+ * - Uses the database partial unique constraint for race condition safety
+ */
+export async function ensureUserAccessRequest(
+  userId: string,
+  options?: { notes?: string; source?: string }
+) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      role: true,
+      status: true,
+      accessRequests: {
+        orderBy: { submittedAt: "desc" },
+        take: 1,
+      },
+    },
+  });
+
+  if (!user) {
+    logger.warn({ userId }, "registration.ensure_request.user_not_found");
+    return null;
+  }
+
+  // Business Rule: Never create admin requests for ADMIN accounts
+  if (user.role === "ADMIN") {
+    logger.info({ userId }, "registration.ensure_request.skipped_admin");
+    return null;
+  }
+
+  // Business Rule: Never create requests for RESTRICTED users
+  if (user.status === "RESTRICTED") {
+    logger.info({ userId }, "registration.ensure_request.skipped_restricted");
+    return null;
+  }
+
+  // Business Rule: If user is ACTIVE, do not create pending requests (preserve active state)
+  if (user.status === "ACTIVE") {
+    return user.accessRequests[0] || null;
+  }
+
+  const latest = user.accessRequests[0];
+
+  // Business Rule: Never duplicate an existing pending request
+  if (latest && latest.status === "PENDING") {
+    if (options?.notes && options.notes !== latest.notes) {
+      const updated = await prisma.accessRequest.update({
+        where: { id: latest.id },
+        data: { notes: options.notes },
+      });
+      logger.info(
+        { userId, requestId: latest.id },
+        "registration.access_request_notes_updated"
+      );
+      return updated;
+    }
+    logger.info(
+      { userId, requestId: latest.id },
+      "registration.existing_pending_request_detected"
+    );
+    return latest;
+  }
+
+  // Business Rule: Preserve existing rejection/approval decision
+  if (latest && (latest.status === "REJECTED" || latest.status === "APPROVED")) {
+    logger.info(
+      { userId, requestId: latest.id, status: latest.status },
+      "registration.existing_decision_preserved"
+    );
+    return latest;
+  }
+
+  // User is PENDING and has no access request: create one idempotently
+  try {
+    const created = await prisma.accessRequest.create({
+      data: {
+        userId,
+        status: "PENDING",
+        notes: options?.notes || null,
+        submittedAt: new Date(),
+      },
+    });
+
+    logger.info(
+      { userId, requestId: created.id, source: options?.source || "auto" },
+      "registration.access_request_created"
+    );
+
+    return created;
+  } catch (err: any) {
+    // If concurrent creation occurred, PostgreSQL unique_pending_access_request_per_user catches it
+    if (err?.code === "P2002") {
+      logger.info(
+        { userId },
+        "registration.access_request_concurrent_conflict_handled"
+      );
+      return prisma.accessRequest.findFirst({
+        where: { userId, status: "PENDING" },
+      });
+    }
+    logger.error(
+      { err, userId },
+      "registration.access_request_creation_failed"
+    );
+    throw err;
+  }
 }
 
 export async function submitUserAccessRequest(
@@ -253,14 +391,22 @@ export async function submitUserAccessRequest(
     throw new NotFoundError("User not found");
   }
 
+  // 1. Never create admin requests for ADMIN accounts
+  if (user.role === "ADMIN") {
+    throw new ForbiddenError(
+      "Admin accounts do not submit access requests",
+      "ADMIN_NO_ACCESS_REQUEST"
+    );
+  }
+
   if (user.status === "RESTRICTED") {
     throw new ForbiddenError(
-      "Your account is restricted",
+      "Your account access is currently restricted.",
       "ACCOUNT_RESTRICTED"
     );
   }
 
-  // 1. Verify terms acceptance
+  // 2. Verify terms acceptance
   if (!user.termsAccepted || user.termsVersion !== CURRENT_TERMS_VERSION) {
     throw new ForbiddenError(
       "You must accept the Terms & Conditions and Privacy Policy before submitting an access request.",
@@ -268,15 +414,39 @@ export async function submitUserAccessRequest(
     );
   }
 
-  // 2. Prevent duplicate pending requests
+  // 3. Prevent duplicate pending requests
   const latestRequest = user.accessRequests[0];
   if (latestRequest && latestRequest.status === "PENDING") {
+    // If request was auto-created without notes, allow the user to complete their submission
+    if (!latestRequest.notes && input.notes) {
+      const updated = await prisma.accessRequest.update({
+        where: { id: latestRequest.id },
+        data: { notes: input.notes },
+      });
+      const regStatus = await getRegistrationStatus(userId);
+      return {
+        message: "Access request submitted successfully.",
+        request: updated,
+        status: regStatus,
+      };
+    }
+
+    if (!latestRequest.notes && !input.notes) {
+      const regStatus = await getRegistrationStatus(userId);
+      return {
+        message: "Access request submitted successfully.",
+        request: latestRequest,
+        status: regStatus,
+      };
+    }
+
+    // A deliberate request has already been submitted with notes: strictly prevent duplicate submissions
     throw new ConflictError(
       "An access request is already pending review. Please wait for an administrator to review your request."
     );
   }
 
-  // If user is already active, never demote them back to PENDING (Issue #17)
+  // 4. If user is already active, never demote them back to PENDING (Issue #17)
   if (user.status === "ACTIVE") {
     return {
       message: "Your account is already active and approved.",
@@ -285,7 +455,7 @@ export async function submitUserAccessRequest(
     };
   }
 
-  // 3. Create new access request and ensure user status is PENDING
+  // 5. Create new access request and ensure user status is PENDING
   let newRequest;
   try {
     newRequest = await prisma.$transaction(async (tx) => {

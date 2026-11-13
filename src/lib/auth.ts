@@ -1,6 +1,7 @@
 import { betterAuth, APIError } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { prisma } from "./prisma.js";
+import { logger } from "./logger.js";
 import { env, isProd } from "../config/env.js";
 
 export const auth = betterAuth({
@@ -58,6 +59,24 @@ export const auth = betterAuth({
             },
           };
         },
+        after: async (user) => {
+          logger.info({ userId: user.id }, "auth.user_registration_completed");
+          try {
+            if (user.role !== "ADMIN") {
+              const { ensureUserAccessRequest } = await import(
+                "../services/registration.service.js"
+              );
+              await ensureUserAccessRequest(user.id, {
+                source: "auth_user_create",
+              });
+            }
+          } catch (err) {
+            logger.error(
+              { err, userId: user.id },
+              "auth.user_create_hook_error"
+            );
+          }
+        },
       },
     },
     session: {
@@ -70,15 +89,37 @@ export const auth = betterAuth({
 
           if (user?.status === "RESTRICTED") {
             throw new APIError("FORBIDDEN", {
-              message: "Your account is restricted",
+              message: "Your account access is currently restricted.",
               code: "ACCOUNT_RESTRICTED",
             });
           }
 
           return { data: session };
         },
+        after: async (session) => {
+          logger.info(
+            { userId: session.userId, sessionId: session.id },
+            "auth.user_synchronization_completed"
+          );
+          try {
+            const { ensureUserAccessRequest } = await import(
+              "../services/registration.service.js"
+            );
+            await ensureUserAccessRequest(session.userId, {
+              source: "auth_session_create",
+            });
+          } catch (err) {
+            logger.error(
+              { err, userId: session.userId },
+              "auth.session_create_hook_error"
+            );
+          }
+        },
       },
     },
+  },
+  onAPIError: {
+    errorURL: `${env.CORS_ORIGINS[0] || "http://localhost:3000"}/login`,
   },
   rateLimit: {
     enabled: true,
