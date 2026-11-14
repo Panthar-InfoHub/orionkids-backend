@@ -34,6 +34,7 @@ enum LevelAttemptStatus {
   IN_PROGRESS
   COMPLETED
   ABANDONED
+  SKIPPED
 }
 
 enum ReportStatus {

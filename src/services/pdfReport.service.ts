@@ -1,4 +1,12 @@
-import { PDFDocument, rgb, StandardFonts, PDFPage, PDFFont } from "pdf-lib";
+import {
+  PDFDocument,
+  rgb,
+  StandardFonts,
+  type PDFPage,
+  type PDFFont,
+  type Color,
+  type RGB,
+} from "pdf-lib";
 import { logger } from "../lib/logger.js";
 import type {
   AiStructuredReport,
@@ -20,25 +28,31 @@ export interface PdfReportData {
 }
 
 // ---------------------------------------------------------------------------
-// OrionKids Brand Color Palette
+// OrionKids Reference Brand Color Palette
 // ---------------------------------------------------------------------------
-const BRAND_NAVY = rgb(10 / 255, 29 / 255, 61 / 255); // #0A1D3D
-const BRAND_GOLD = rgb(255 / 255, 208 / 255, 40 / 255); // #FFD028
+const BRAND_NAVY = rgb(15 / 255, 31 / 255, 56 / 255); // #0F1F38 (deep rich navy)
+const BRAND_GOLD = rgb(251 / 255, 191 / 255, 36 / 255); // #FBBF24 (sun dot, warm gold)
 const BRAND_CYAN = rgb(0 / 255, 188 / 255, 212 / 255); // #00BCD4
-const BRAND_AMBER = rgb(217 / 255, 119 / 255, 6 / 255); // #D97706
-const TEXT_DARK = rgb(30 / 255, 41 / 255, 59 / 255); // #1E293B
-const TEXT_MUTED = rgb(100 / 255, 116 / 255, 139 / 255); // #64748B
-const BG_LIGHT = rgb(248 / 255, 250 / 255, 252 / 255); // #F8FAFC
-const BG_CARD = rgb(255 / 255, 255 / 255, 255 / 255);
-const BORDER_COLOR = rgb(226 / 255, 232 / 255, 240 / 255); // #E2E8F0
+const BRAND_AMBER = rgb(234 / 255, 88 / 255, 12 / 255); // #EA580C (Area of Improvement)
+const BRAND_BLUE = rgb(2 / 255, 132 / 255, 199 / 255); // #0284C7 (Steady)
+const BRAND_GREEN = rgb(22 / 255, 163 / 255, 74 / 255); // #16A34A (Strong)
+const TEXT_DARK = rgb(30 / 255, 41 / 255, 59 / 255); // #1E293B (headings, bold text)
+const TEXT_BODY = rgb(51 / 255, 65 / 255, 85 / 255); // #334155 (main body copy)
+const TEXT_MUTED = rgb(100 / 255, 116 / 255, 139 / 255); // #64748B (subtitles, metadata)
+const BG_LIGHT_BLUE = rgb(240 / 255, 244 / 255, 250 / 255); // #F0F4FA (metadata bar)
+const BG_CARD_GREY = rgb(244 / 255, 247 / 255, 252 / 255); // #F4F7FC (summary cards)
+const BG_CARD_MINT = rgb(240 / 255, 253 / 255, 244 / 255); // #F0FDF4 (strengths cards)
+const BORDER_CARD_MINT = rgb(187 / 255, 247 / 255, 208 / 255); // #BBF7D0
+const BG_CARD_PEACH = rgb(255 / 255, 247 / 255, 237 / 255); // #FFF7ED (practice cards)
+const BORDER_CARD_PEACH = rgb(254 / 255, 215 / 255, 170 / 255); // #FED7AA
+const BG_TIP_AMBER = rgb(254 / 255, 243 / 255, 199 / 255); // #FEF3C7 (parent tips)
+const BORDER_TIP_AMBER = rgb(253 / 255, 230 / 255, 138 / 255); // #FDE68A
+const BORDER_LIGHT = rgb(226 / 255, 232 / 255, 240 / 255); // #E2E8F0 (dividers, table lines)
 const WHITE = rgb(1, 1, 1);
-const SUCCESS_GREEN = rgb(16 / 255, 185 / 255, 129 / 255); // #10B981
-const SOFT_AMBER_BG = rgb(254 / 255, 243 / 255, 199 / 255); // #FEF3C7
-const SOFT_GREEN_BG = rgb(236 / 255, 253 / 255, 245 / 255); // #ECFDF5
 
 const PAGE_WIDTH = 595.28; // Standard A4 width
 const PAGE_HEIGHT = 841.89; // Standard A4 height
-const MARGIN = 40;
+const MARGIN = 38;
 const CONTENT_WIDTH = PAGE_WIDTH - MARGIN * 2;
 
 // ---------------------------------------------------------------------------
@@ -68,6 +82,419 @@ function wrapText(
   }
   if (currentLine) lines.push(currentLine);
   return lines;
+}
+
+/**
+ * Draws smooth anti-aliased rounded rectangles in PDF coordinate space.
+ */
+function drawRoundedRect(
+  page: PDFPage,
+  opts: {
+    x: number;
+    y: number; // bottom-left y
+    width: number;
+    height: number;
+    radius?: number;
+    color?: Color;
+    borderColor?: Color;
+    borderWidth?: number;
+  }
+) {
+  const {
+    x,
+    y,
+    width: w,
+    height: h,
+    radius: r = 8,
+    color,
+    borderColor,
+    borderWidth,
+  } = opts;
+  const rad = Math.min(r, w / 2, h / 2);
+  const path = `M ${rad} 0 L ${w - rad} 0 Q ${w} 0 ${w} ${-rad} L ${w} ${-(h - rad)} Q ${w} ${-h} ${w - rad} ${-h} L ${rad} ${-h} Q 0 ${-h} 0 ${-(h - rad)} L 0 ${-rad} Q 0 0 ${rad} 0 Z`;
+  page.drawSvgPath(path, {
+    x,
+    y: y,
+    color,
+    borderColor,
+    borderWidth,
+  });
+}
+
+/**
+ * Draws status badges matching the reference design pills (Strong, Steady, Area of Improvement).
+ */
+function drawPill(
+  page: PDFPage,
+  opts: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    color: Color;
+    label: string;
+    font: PDFFont;
+    fontSize?: number;
+    textColor?: Color;
+  }
+) {
+  const {
+    x,
+    y,
+    width: w,
+    height: h,
+    color,
+    label,
+    font,
+    fontSize = 7.5,
+    textColor = WHITE,
+  } = opts;
+  drawRoundedRect(page, {
+    x,
+    y,
+    width: w,
+    height: h,
+    radius: h / 2,
+    color,
+  });
+  const textW = font.widthOfTextAtSize(label, fontSize);
+  page.drawText(label, {
+    x: x + (w - textW) / 2,
+    y: y + (h - fontSize) / 2 + 1,
+    size: fontSize,
+    font,
+    color: textColor,
+  });
+}
+
+/**
+ * Draws the reference normal distribution bell curve with 3 shaded zones, marker pin, and legend.
+ */
+function drawBellCurve(
+  page: PDFPage,
+  fontRegular: PDFFont,
+  fontBold: PDFFont,
+  opts: {
+    x0: number;
+    y0: number;
+    width: number;
+    height: number;
+    scorePercent: number;
+    childName: string;
+  }
+) {
+  const { x0, y0, width, height, scorePercent, childName } = opts;
+  const x1 = x0 + width;
+  const xMid = x0 + width / 2;
+  const sigma = width / 5.5;
+
+  function getCurveHeight(x: number) {
+    const z = (x - xMid) / sigma;
+    return height * Math.exp(-0.5 * z * z);
+  }
+
+  const xSplit1 = x0 + width * 0.4; // ~50th percentile boundary
+  const xSplit2 = x0 + width * 0.7; // ~75th percentile boundary
+
+  function buildRegionPath(fromX: number, toX: number) {
+    const steps = 30;
+    let path = `M ${fromX - x0} 0`;
+    for (let i = 0; i <= steps; i++) {
+      const curX = fromX + (toX - fromX) * (i / steps);
+      const h = -getCurveHeight(curX);
+      path += ` L ${curX - x0} ${h}`;
+    }
+    path += ` L ${toX - x0} 0 Z`;
+    return path;
+  }
+
+  // Draw 3 shaded regions under curve
+  // 1. Area of Improvement (Peach)
+  page.drawSvgPath(buildRegionPath(x0, xSplit1), {
+    x: x0,
+    y: y0,
+    color: rgb(254 / 255, 237 / 255, 214 / 255), // Peach
+  });
+  // 2. Steady (Light Blue)
+  page.drawSvgPath(buildRegionPath(xSplit1, xSplit2), {
+    x: x0,
+    y: y0,
+    color: rgb(224 / 255, 238 / 255, 252 / 255), // Blue
+  });
+  // 3. Strong (Soft Green)
+  page.drawSvgPath(buildRegionPath(xSplit2, x1), {
+    x: x0,
+    y: y0,
+    color: rgb(219 / 255, 242 / 255, 228 / 255), // Green
+  });
+
+  // Baseline
+  page.drawLine({
+    start: { x: x0 - 8, y: y0 },
+    end: { x: x1 + 8, y: y0 },
+    thickness: 1.2,
+    color: BRAND_NAVY,
+  });
+
+  // Curve stroke line
+  const curveSteps = 60;
+  let curvePath = `M 0 ${-getCurveHeight(x0)}`;
+  for (let i = 1; i <= curveSteps; i++) {
+    const curX = x0 + width * (i / curveSteps);
+    curvePath += ` L ${curX - x0} ${-getCurveHeight(curX)}`;
+  }
+  page.drawSvgPath(curvePath, {
+    x: x0,
+    y: y0,
+    borderColor: BRAND_NAVY,
+    borderWidth: 1.5,
+  });
+
+  // Child score marker
+  const scoreFraction = Math.max(0.05, Math.min(0.95, scorePercent / 100));
+  const scoreX = x0 + width * scoreFraction;
+  const scoreH = getCurveHeight(scoreX);
+  const scoreY = y0 + scoreH;
+
+  // Dashed vertical line
+  page.drawLine({
+    start: { x: scoreX, y: y0 },
+    end: { x: scoreX, y: scoreY },
+    thickness: 1.2,
+    color: BRAND_NAVY,
+    dashArray: [3, 2],
+  });
+
+  // Pin dot
+  page.drawCircle({
+    x: scoreX,
+    y: scoreY,
+    size: 4,
+    color: BRAND_NAVY,
+  });
+
+  // Label above/beside pin: e.g. "Ananya: 82%"
+  const firstName = childName.split(" ")[0] || "Child";
+  const labelText = `${firstName}: ${Math.round(scorePercent)}%`;
+  const labelW = fontBold.widthOfTextAtSize(labelText, 8);
+  let labelX = scoreX - labelW / 2;
+  let labelY = scoreY + 6;
+
+  if (scoreFraction > 0.65) {
+    labelX = Math.min(x1 - labelW, scoreX + 6);
+    labelY = scoreY - 2;
+  } else if (scoreFraction < 0.35) {
+    labelX = Math.max(x0, scoreX - labelW - 6);
+    labelY = scoreY - 2;
+  } else {
+    labelX = Math.max(x0, Math.min(x1 - labelW, scoreX - labelW / 2));
+    labelY = scoreY + 6;
+  }
+
+  page.drawText(labelText, {
+    x: labelX,
+    y: labelY,
+    size: 8,
+    font: fontBold,
+    color: BRAND_NAVY,
+  });
+
+  // Bottom Ticks and labels
+  const ticks = [
+    { label: "5%", x: x0 + width * 0.05 },
+    { label: "25%", x: x0 + width * 0.25 },
+    { label: "50%", x: x0 + width * 0.5 },
+    { label: "75%", x: x0 + width * 0.75 },
+    { label: "95%", x: x0 + width * 0.95 },
+  ];
+  for (const t of ticks) {
+    const tw = fontRegular.widthOfTextAtSize(t.label, 6.5);
+    page.drawText(t.label, {
+      x: t.x - tw / 2,
+      y: y0 - 10,
+      size: 6.5,
+      font: fontRegular,
+      color: TEXT_MUTED,
+    });
+  }
+
+  // Legend
+  const legendY = y0 - 22;
+  page.drawText("Area of Improvement", {
+    x: x0 + 15,
+    y: legendY,
+    size: 7.5,
+    font: fontBold,
+    color: BRAND_AMBER,
+  });
+  const leg2 = "Steady";
+  page.drawText(leg2, {
+    x: x0 + width * 0.48 - fontBold.widthOfTextAtSize(leg2, 7.5) / 2,
+    y: legendY,
+    size: 7.5,
+    font: fontBold,
+    color: BRAND_BLUE,
+  });
+  const leg3 = "Strong";
+  page.drawText(leg3, {
+    x: x1 - fontBold.widthOfTextAtSize(leg3, 7.5) - 15,
+    y: legendY,
+    size: 7.5,
+    font: fontBold,
+    color: BRAND_GREEN,
+  });
+}
+
+/**
+ * Draws the reference 3-segment horizontal progress bar with circular navy score pin.
+ */
+function drawSkillsBar(
+  page: PDFPage,
+  fontBold: PDFFont,
+  opts: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    score: number;
+  }
+) {
+  const { x, y, width: w, height: h, score } = opts;
+  const gap = 3;
+  const segW = (w - gap * 2) / 3;
+  const rad = h / 2;
+
+  // Segment 1 (Peach - Improvement)
+  drawRoundedRect(page, {
+    x,
+    y,
+    width: segW,
+    height: h,
+    radius: rad,
+    color: rgb(254 / 255, 226 / 255, 199 / 255), // #FEE2C7
+  });
+
+  // Segment 2 (Blue - Steady)
+  drawRoundedRect(page, {
+    x: x + segW + gap,
+    y,
+    width: segW,
+    height: h,
+    radius: rad,
+    color: rgb(224 / 255, 238 / 255, 252 / 255), // #E0EEFC
+  });
+
+  // Segment 3 (Green - Strong)
+  drawRoundedRect(page, {
+    x: x + (segW + gap) * 2,
+    y,
+    width: segW,
+    height: h,
+    radius: rad,
+    color: rgb(219 / 255, 242 / 255, 228 / 255), // #DBF2E4
+  });
+
+  // Circular navy score pin
+  const clampedScore = Math.max(5, Math.min(95, score));
+  const pinX = x + w * (clampedScore / 100);
+  const pinY = y + h / 2;
+
+  page.drawCircle({
+    x: pinX,
+    y: pinY,
+    size: 7.5,
+    color: BRAND_NAVY,
+  });
+
+  const scoreText = String(Math.round(score));
+  const textW = fontBold.widthOfTextAtSize(scoreText, 7);
+  page.drawText(scoreText, {
+    x: pinX - textW / 2,
+    y: pinY - 2.5,
+    size: 7,
+    font: fontBold,
+    color: WHITE,
+  });
+}
+
+/**
+ * Draws the 3-circle Venn diagram (Family, School, Community overlapping on Child)
+ */
+function drawVennDiagram(
+  page: PDFPage,
+  fontBold: PDFFont,
+  opts: {
+    cx: number;
+    cy: number;
+    radius: number;
+  }
+) {
+  const { cx, cy, radius } = opts;
+  const d = radius * 0.75;
+
+  // Top Circle: Family (warm yellow)
+  page.drawCircle({
+    x: cx,
+    y: cy + d * 0.65,
+    size: radius,
+    color: rgb(253 / 255, 224 / 255, 71 / 255),
+    opacity: 0.65,
+  });
+
+  // Bottom-Left Circle: School (cyan/teal)
+  page.drawCircle({
+    x: cx - d * 0.7,
+    y: cy - d * 0.45,
+    size: radius,
+    color: rgb(103 / 255, 232 / 255, 249 / 255),
+    opacity: 0.65,
+  });
+
+  // Bottom-Right Circle: Community (coral/rose)
+  page.drawCircle({
+    x: cx + d * 0.7,
+    y: cy - d * 0.45,
+    size: radius,
+    color: rgb(253 / 255, 164 / 255, 175 / 255),
+    opacity: 0.65,
+  });
+
+  // Labels
+  const famText = "Family";
+  page.drawText(famText, {
+    x: cx - fontBold.widthOfTextAtSize(famText, 8.5) / 2,
+    y: cy + d * 0.85,
+    size: 8.5,
+    font: fontBold,
+    color: BRAND_NAVY,
+  });
+
+  const schText = "School";
+  page.drawText(schText, {
+    x: cx - d * 0.85 - fontBold.widthOfTextAtSize(schText, 8.5) / 2,
+    y: cy - d * 0.55,
+    size: 8.5,
+    font: fontBold,
+    color: BRAND_NAVY,
+  });
+
+  const comText = "Community";
+  page.drawText(comText, {
+    x: cx + d * 0.85 - fontBold.widthOfTextAtSize(comText, 8.5) / 2,
+    y: cy - d * 0.55,
+    size: 8.5,
+    font: fontBold,
+    color: BRAND_NAVY,
+  });
+
+  const childText = "Child";
+  page.drawText(childText, {
+    x: cx - fontBold.widthOfTextAtSize(childText, 9.5) / 2,
+    y: cy - 2,
+    size: 9.5,
+    font: fontBold,
+    color: BRAND_NAVY,
+  });
 }
 
 function formatStrength(item: any): {
@@ -110,7 +537,7 @@ function formatPracticeArea(item: any): {
       pattern: item,
       evidence: item,
       approach:
-        "Engage in playful, everyday household routines that exercise this skill in a low-pressure environment.",
+        "Engage in playful, everyday household routines that exercise this skill in an encouraging, low-pressure environment.",
     };
   }
   return {
@@ -134,18 +561,21 @@ function formatHomeActivity(item: any): {
 } {
   return {
     title: item.title || "Home Exploration Activity",
-    skills: Array.isArray(item.skillsPracticed) && item.skillsPracticed.length > 0
-      ? item.skillsPracticed
-      : ["Cognitive Play", "Creative Thinking"],
-    materials: Array.isArray(item.materials) && item.materials.length > 0
-      ? item.materials
-      : ["Everyday household objects"],
-    instructions: Array.isArray(item.instructions) && item.instructions.length > 0
-      ? item.instructions
-      : [
-          item.description ||
-            "Engage in hands-on playful problem solving together with your child.",
-        ],
+    skills:
+      Array.isArray(item.skillsPracticed) && item.skillsPracticed.length > 0
+        ? item.skillsPracticed
+        : ["Cognitive Play", "Creative Thinking"],
+    materials:
+      Array.isArray(item.materials) && item.materials.length > 0
+        ? item.materials
+        : ["Everyday household objects"],
+    instructions:
+      Array.isArray(item.instructions) && item.instructions.length > 0
+        ? item.instructions
+        : [
+            item.description ||
+              "Engage in hands-on playful problem solving together with your child.",
+          ],
     duration: item.suggestedDuration || "10–15 minutes",
     progression: item.difficultyProgression || "",
     opportunity:
@@ -189,354 +619,578 @@ export async function generateReportPdf(
     };
 
     const drawPageHeader = () => {
-      currentPage.drawRectangle({
-        x: MARGIN,
-        y: y - 2,
-        width: CONTENT_WIDTH,
-        height: 1,
-        color: BORDER_COLOR,
+      currentPage.drawLine({
+        start: { x: MARGIN, y: y + 8 },
+        end: { x: PAGE_WIDTH - MARGIN, y: y + 8 },
+        thickness: 0.5,
+        color: BORDER_LIGHT,
       });
-      currentPage.drawText("OrionKids · Cognitive Assessment Report", {
+      currentPage.drawText("OrionKids · Thinking Skills Report", {
         x: MARGIN,
-        y: y + 4,
-        size: 8,
+        y: y + 12,
+        size: 7.5,
         font: fontRegular,
         color: TEXT_MUTED,
       });
-      currentPage.drawText(data.childName, {
-        x: PAGE_WIDTH - MARGIN - fontBold.widthOfTextAtSize(data.childName, 8),
-        y: y + 4,
-        size: 8,
+      const rightText = `${data.childName} · ${data.selectedClass}`;
+      currentPage.drawText(rightText, {
+        x: PAGE_WIDTH - MARGIN - fontBold.widthOfTextAtSize(rightText, 7.5),
+        y: y + 12,
+        size: 7.5,
         font: fontBold,
         color: BRAND_NAVY,
       });
-      y -= 20;
+      y -= 14;
     };
 
     // =========================================================================
-    // PAGE 1: COVER / TOP BRAND HEADER
+    // PAGE 1: HEADER BANNER (Matching Reference Style)
     // =========================================================================
-    currentPage.drawRectangle({
+    const headerHeight = 58;
+    drawRoundedRect(currentPage, {
       x: MARGIN,
-      y: y - 56,
+      y: y - headerHeight,
       width: CONTENT_WIDTH,
-      height: 56,
+      height: headerHeight,
+      radius: 12,
       color: BRAND_NAVY,
     });
 
-    // Top gold accent bar
-    currentPage.drawRectangle({
-      x: MARGIN,
-      y: y - 4,
-      width: CONTENT_WIDTH,
-      height: 4,
+    // Left: Sun / Circle Logo & Brand Name
+    currentPage.drawCircle({
+      x: MARGIN + 22,
+      y: y - 28,
+      size: 7,
       color: BRAND_GOLD,
     });
 
     currentPage.drawText("ORIONKIDS", {
-      x: MARGIN + 16,
+      x: MARGIN + 36,
       y: y - 24,
       size: 16,
       font: fontBold,
-      color: BRAND_GOLD,
+      color: WHITE,
     });
 
-    currentPage.drawText("COGNITIVE EXPLORATION & PERFORMANCE REPORT", {
-      x: MARGIN + 16,
-      y: y - 42,
-      size: 9,
+    currentPage.drawText("Where Every Kid Is a Star", {
+      x: MARGIN + 36,
+      y: y - 40,
+      size: 8.5,
       font: fontRegular,
+      color: rgb(203 / 255, 213 / 255, 225 / 255),
+    });
+
+    // Right: Document Title & Subtitle
+    const titleRight1 = "Thinking Skills Report";
+    currentPage.drawText(titleRight1, {
+      x: PAGE_WIDTH - MARGIN - 18 - fontBold.widthOfTextAtSize(titleRight1, 13),
+      y: y - 24,
+      size: 13,
+      font: fontBold,
       color: WHITE,
+    });
+
+    const titleRight2 = "For parents and families";
+    currentPage.drawText(titleRight2, {
+      x:
+        PAGE_WIDTH -
+        MARGIN -
+        18 -
+        fontRegular.widthOfTextAtSize(titleRight2, 8.5),
+      y: y - 40,
+      size: 8.5,
+      font: fontRegular,
+      color: rgb(203 / 255, 213 / 255, 225 / 255),
+    });
+
+    y -= headerHeight + 10;
+
+    // =========================================================================
+    // METADATA STRIP (Matching Reference Style)
+    // =========================================================================
+    const metaHeight = 28;
+    drawRoundedRect(currentPage, {
+      x: MARGIN,
+      y: y - metaHeight,
+      width: CONTENT_WIDTH,
+      height: metaHeight,
+      radius: 7,
+      color: BG_LIGHT_BLUE,
     });
 
     const completionDateStr = data.questCompletedAt
       ? new Date(data.questCompletedAt).toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
+          month: "long",
           year: "numeric",
         })
       : new Date().toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
+          month: "long",
           year: "numeric",
         });
 
-    currentPage.drawText(`Date: ${completionDateStr}`, {
-      x: PAGE_WIDTH - MARGIN - 130,
-      y: y - 24,
-      size: 9,
-      font: fontRegular,
-      color: WHITE,
-    });
+    const metaY = y - 18;
+    let metaX = MARGIN + 14;
 
-    currentPage.drawText("Authoritative Record", {
-      x: PAGE_WIDTH - MARGIN - 130,
-      y: y - 42,
-      size: 8,
+    // Item 1: Child
+    currentPage.drawText("Child", {
+      x: metaX,
+      y: metaY,
+      size: 8.5,
       font: fontBold,
-      color: SUCCESS_GREEN,
+      color: BRAND_NAVY,
+    });
+    metaX += fontBold.widthOfTextAtSize("Child ", 8.5);
+    currentPage.drawText(data.childName, {
+      x: metaX,
+      y: metaY,
+      size: 8.5,
+      font: fontRegular,
+      color: BRAND_NAVY,
+    });
+    metaX += fontRegular.widthOfTextAtSize(data.childName, 8.5) + 32;
+
+    // Item 2: Class
+    currentPage.drawText("Class", {
+      x: metaX,
+      y: metaY,
+      size: 8.5,
+      font: fontBold,
+      color: BRAND_NAVY,
+    });
+    metaX += fontBold.widthOfTextAtSize("Class ", 8.5);
+    currentPage.drawText(data.selectedClass, {
+      x: metaX,
+      y: metaY,
+      size: 8.5,
+      font: fontRegular,
+      color: BRAND_NAVY,
+    });
+    metaX += fontRegular.widthOfTextAtSize(data.selectedClass, 8.5) + 32;
+
+    // Item 3: Age
+    currentPage.drawText("Age", {
+      x: metaX,
+      y: metaY,
+      size: 8.5,
+      font: fontBold,
+      color: BRAND_NAVY,
+    });
+    metaX += fontBold.widthOfTextAtSize("Age ", 8.5);
+    const ageStr = `${data.age} years`;
+    currentPage.drawText(ageStr, {
+      x: metaX,
+      y: metaY,
+      size: 8.5,
+      font: fontRegular,
+      color: BRAND_NAVY,
+    });
+    metaX += fontRegular.widthOfTextAtSize(ageStr, 8.5) + 32;
+
+    // Item 4: Session
+    currentPage.drawText("Session", {
+      x: metaX,
+      y: metaY,
+      size: 8.5,
+      font: fontBold,
+      color: BRAND_NAVY,
+    });
+    metaX += fontBold.widthOfTextAtSize("Session ", 8.5);
+    currentPage.drawText(completionDateStr, {
+      x: metaX,
+      y: metaY,
+      size: 8.5,
+      font: fontRegular,
+      color: BRAND_NAVY,
     });
 
-    y -= 72;
+    y -= metaHeight + 12;
 
     // =========================================================================
-    // CHILD PROFILE CARD
+    // "ABOUT THIS REPORT" CARD
     // =========================================================================
-    const cardHeight = 64;
-    currentPage.drawRectangle({
+    const firstName = data.childName.split(" ")[0] || "Your child";
+    const aboutIntroText = `${firstName} played six short games that look at how children focus, remember, reason and plan. This report shows where ${firstName} shines, where thinking skills are still growing, and simple ways family, school and community can help. It reflects one play session and is not a diagnosis or a label.`;
+
+    const aboutLines = wrapText(aboutIntroText, fontRegular, 8.5, CONTENT_WIDTH - 24);
+    const aboutCardHeight = 22 + aboutLines.length * 12 + 6;
+
+    drawRoundedRect(currentPage, {
       x: MARGIN,
-      y: y - cardHeight,
+      y: y - aboutCardHeight,
       width: CONTENT_WIDTH,
-      height: cardHeight,
-      color: BG_LIGHT,
-      borderColor: BORDER_COLOR,
-      borderWidth: 1,
+      height: aboutCardHeight,
+      radius: 9,
+      color: BG_CARD_GREY,
     });
 
-    const durationMin = Math.round(data.totalDurationMs / 60000);
-
-    // Left column: Child metadata
-    currentPage.drawText(`Child: ${data.childName}`, {
-      x: MARGIN + 16,
-      y: y - 20,
-      size: 13,
+    currentPage.drawText("About this report", {
+      x: MARGIN + 12,
+      y: y - 16,
+      size: 9.5,
       font: fontBold,
       color: BRAND_NAVY,
     });
 
-    const classInfo = `${data.selectedClass} · Age ${data.age}${data.school ? ` · ${data.school}` : ""}`;
-    currentPage.drawText(classInfo, {
-      x: MARGIN + 16,
-      y: y - 36,
-      size: 9,
-      font: fontRegular,
-      color: TEXT_MUTED,
-    });
+    let aboutTextY = y - 30;
+    for (const line of aboutLines) {
+      currentPage.drawText(line, {
+        x: MARGIN + 12,
+        y: aboutTextY,
+        size: 8.5,
+        font: fontRegular,
+        color: TEXT_BODY,
+      });
+      aboutTextY -= 12;
+    }
 
-    currentPage.drawText(`Quest Completed: ${completionDateStr}`, {
-      x: MARGIN + 16,
-      y: y - 50,
-      size: 8,
-      font: fontRegular,
-      color: TEXT_MUTED,
-    });
-
-    // Right column: Key metrics badge
-    currentPage.drawText("Overall Accuracy", {
-      x: PAGE_WIDTH - MARGIN - 160,
-      y: y - 22,
-      size: 8,
-      font: fontRegular,
-      color: TEXT_MUTED,
-    });
-
-    currentPage.drawText(`${Math.round(data.overallAccuracy)}%`, {
-      x: PAGE_WIDTH - MARGIN - 160,
-      y: y - 44,
-      size: 18,
-      font: fontBold,
-      color: BRAND_NAVY,
-    });
-
-    currentPage.drawText("Play Duration", {
-      x: PAGE_WIDTH - MARGIN - 75,
-      y: y - 22,
-      size: 8,
-      font: fontRegular,
-      color: TEXT_MUTED,
-    });
-
-    currentPage.drawText(`${durationMin} min`, {
-      x: PAGE_WIDTH - MARGIN - 75,
-      y: y - 44,
-      size: 18,
-      font: fontBold,
-      color: BRAND_NAVY,
-    });
-
-    y -= cardHeight + 18;
+    y -= aboutCardHeight + 14;
 
     // =========================================================================
-    // EXECUTIVE JOURNEY SUMMARY (100–150 words)
+    // "OVERALL RESULT" & VISUAL BELL CURVE
     // =========================================================================
-    checkPageBreak(80);
-    currentPage.drawText("EXECUTIVE JOURNEY SUMMARY", {
+    currentPage.drawText("Overall result", {
       x: MARGIN,
       y,
-      size: 11,
+      size: 13,
       font: fontBold,
       color: BRAND_NAVY,
     });
     y -= 14;
 
+    const overallScore = Math.round(data.overallAccuracy);
+    const durationMin = Math.round(data.totalDurationMs / 60000);
+
+    // Left Column: Big % Metric
+    const scoreY = y - 38;
+    currentPage.drawText(`${overallScore}%`, {
+      x: MARGIN + 2,
+      y: scoreY,
+      size: 34,
+      font: fontBold,
+      color: BRAND_NAVY,
+    });
+
+    currentPage.drawText("overall accuracy", {
+      x: MARGIN + 2,
+      y: scoreY - 12,
+      size: 9,
+      font: fontBold,
+      color: BRAND_NAVY,
+    });
+
+    currentPage.drawText("across 18 quest levels", {
+      x: MARGIN + 2,
+      y: scoreY - 23,
+      size: 7.5,
+      font: fontRegular,
+      color: TEXT_MUTED,
+    });
+
+    currentPage.drawText(`Duration: ${durationMin} min`, {
+      x: MARGIN + 2,
+      y: scoreY - 34,
+      size: 7.5,
+      font: fontRegular,
+      color: TEXT_MUTED,
+    });
+
+    // Right Column: Bell Curve
+    const curveWidth = 330;
+    const curveHeight = 52;
+    const curveX = PAGE_WIDTH - MARGIN - curveWidth - 8;
+    const curveBaseY = y - 56;
+
+    drawBellCurve(currentPage, fontRegular, fontBold, {
+      x0: curveX,
+      y0: curveBaseY,
+      width: curveWidth,
+      height: curveHeight,
+      scorePercent: overallScore,
+      childName: data.childName,
+    });
+
+    y -= 88;
+
+    // Explanatory paragraph underneath bell curve
+    const overallExplText = `A composite accuracy of ${overallScore}% indicates dependable engagement across cognitive challenges. Scores above 75% reflect strong mastery, while 50% to 75% indicate steady developmental progress. A score simply shows where play and practice will help most.`;
+    const explLines = wrapText(overallExplText, fontRegular, 7.5, CONTENT_WIDTH);
+    for (const el of explLines) {
+      currentPage.drawText(el, {
+        x: MARGIN,
+        y,
+        size: 7.5,
+        font: fontRegular,
+        color: TEXT_MUTED,
+      });
+      y -= 10.5;
+    }
+
+    y -= 8;
+
+    // =========================================================================
+    // "SUMMARY" CARD (Executive Journey Summary)
+    // =========================================================================
     const summaryText =
       data.aiReport.overallPerformanceSummary ||
       data.aiReport.questSummary ||
       "";
-    const summaryLines = wrapText(summaryText, fontRegular, 8.5, CONTENT_WIDTH);
+    const summaryLines = wrapText(summaryText, fontRegular, 8.5, CONTENT_WIDTH - 24);
+    const summaryCardHeight = 22 + summaryLines.length * 12 + 6;
 
+    checkPageBreak(summaryCardHeight + 10);
+
+    drawRoundedRect(currentPage, {
+      x: MARGIN,
+      y: y - summaryCardHeight,
+      width: CONTENT_WIDTH,
+      height: summaryCardHeight,
+      radius: 9,
+      color: BG_CARD_GREY,
+    });
+
+    currentPage.drawText("Summary", {
+      x: MARGIN + 12,
+      y: y - 16,
+      size: 9.5,
+      font: fontBold,
+      color: BRAND_NAVY,
+    });
+
+    let sumY = y - 30;
     for (const line of summaryLines) {
-      checkPageBreak(13);
       currentPage.drawText(line, {
-        x: MARGIN,
-        y,
+        x: MARGIN + 12,
+        y: sumY,
         size: 8.5,
         font: fontRegular,
-        color: TEXT_DARK,
-        lineHeight: 12.5,
+        color: TEXT_BODY,
       });
-      y -= 12.5;
+      sumY -= 12;
     }
 
-    y -= 12;
+    y -= summaryCardHeight + 14;
 
     // =========================================================================
-    // SIX COGNITIVE DOMAINS SUMMARY TABLE
+    // "SIX COGNITIVE DOMAINS SUMMARY" (Detailed Table with Status, Levels, Accuracy, Avg Pace)
     // =========================================================================
-    checkPageBreak(170);
-    currentPage.drawText("SIX COGNITIVE DOMAINS SUMMARY", {
+    checkPageBreak(200);
+    currentPage.drawText("Six Cognitive Domains Summary", {
       x: MARGIN,
       y,
-      size: 11,
+      size: 13,
       font: fontBold,
       color: BRAND_NAVY,
     });
-    y -= 16;
+    y -= 14;
 
     // Table Header
-    const tableHeaderHeight = 20;
     currentPage.drawRectangle({
       x: MARGIN,
-      y: y - tableHeaderHeight,
+      y: y - 18,
       width: CONTENT_WIDTH,
-      height: tableHeaderHeight,
+      height: 18,
       color: BRAND_NAVY,
     });
 
-    currentPage.drawText("Game & Domain", {
-      x: MARGIN + 10,
-      y: y - 14,
-      size: 8,
+    currentPage.drawText("ACTIVITY & FOCUS AREA", {
+      x: MARGIN + 8,
+      y: y - 12,
+      size: 7.5,
       font: fontBold,
       color: WHITE,
     });
 
-    currentPage.drawText("Levels Done", {
-      x: MARGIN + 260,
-      y: y - 14,
-      size: 8,
+    currentPage.drawText("STATUS", {
+      x: MARGIN + 185,
+      y: y - 12,
+      size: 7.5,
       font: fontBold,
       color: WHITE,
     });
 
-    currentPage.drawText("Accuracy", {
-      x: MARGIN + 350,
-      y: y - 14,
-      size: 8,
+    currentPage.drawText("LEVELS", {
+      x: MARGIN + 295,
+      y: y - 12,
+      size: 7.5,
       font: fontBold,
       color: WHITE,
     });
 
-    currentPage.drawText("Avg Pace", {
-      x: MARGIN + 430,
-      y: y - 14,
-      size: 8,
+    currentPage.drawText("ACCURACY", {
+      x: MARGIN + 380,
+      y: y - 12,
+      size: 7.5,
       font: fontBold,
       color: WHITE,
     });
 
-    y -= tableHeaderHeight;
+    currentPage.drawText("AVG PACE", {
+      x: MARGIN + 445,
+      y: y - 12,
+      size: 7.5,
+      font: fontBold,
+      color: WHITE,
+    });
+
+    y -= 20;
 
     const gamesList = data.aiReport.gameWiseAnalysis || [];
     for (let i = 0; i < gamesList.length; i++) {
       const g = gamesList[i];
       if (!g) continue;
-      checkPageBreak(24);
+      checkPageBreak(26);
+
+      const clampedLevels = Math.min(3, Math.max(0, g.levelsCompleted));
+      const isSkipped =
+        g.gameStatus === "SKIPPED" ||
+        (clampedLevels < 3 && g.averageAccuracy === null);
+      const isNotAttempted = clampedLevels === 0 && !isSkipped;
 
       const isEven = i % 2 === 0;
-      if (isEven) {
-        currentPage.drawRectangle({
-          x: MARGIN,
-          y: y - 22,
-          width: CONTENT_WIDTH,
-          height: 22,
-          color: BG_LIGHT,
-        });
-      }
-
       currentPage.drawRectangle({
         x: MARGIN,
-        y: y - 22,
+        y: y - 24,
         width: CONTENT_WIDTH,
-        height: 0.5,
-        color: BORDER_COLOR,
+        height: 24,
+        color: isEven ? rgb(248 / 255, 250 / 255, 252 / 255) : WHITE,
+        borderColor: BORDER_LIGHT,
+        borderWidth: 0.5,
       });
 
-      currentPage.drawText(`${g.gameName}`, {
-        x: MARGIN + 10,
-        y: y - 11,
+      // Activity Name + Cognitive Domain
+      currentPage.drawText(g.gameName, {
+        x: MARGIN + 8,
+        y: y - 10,
         size: 8.5,
         font: fontBold,
         color: BRAND_NAVY,
       });
 
       currentPage.drawText(`(${g.cognitiveDomain})`, {
-        x: MARGIN + 10,
+        x: MARGIN + 8,
         y: y - 20,
         size: 7,
-        font: fontOblique,
+        font: fontRegular,
         color: TEXT_MUTED,
       });
 
-      currentPage.drawText(`${g.levelsCompleted}/3 Levels`, {
-        x: MARGIN + 260,
+      // Status Column
+      let statusStr = "Completed";
+      let statusColor = BRAND_GREEN;
+      if (isSkipped) {
+        statusStr = "Skipped by child";
+        statusColor = rgb(217 / 255, 119 / 255, 6 / 255); // amber
+      } else if (isNotAttempted) {
+        statusStr = "Not Attempted";
+        statusColor = TEXT_MUTED;
+      }
+
+      currentPage.drawText(statusStr, {
+        x: MARGIN + 185,
+        y: y - 14,
+        size: 8,
+        font: fontBold,
+        color: statusColor,
+      });
+
+      // Levels Column
+      const levelsStr = isSkipped
+        ? `${clampedLevels}/3 (Skipped)`
+        : `${clampedLevels}/3 Levels`;
+      currentPage.drawText(levelsStr, {
+        x: MARGIN + 295,
         y: y - 14,
         size: 8,
         font: fontRegular,
         color: TEXT_DARK,
       });
 
+      // Accuracy Column
       const accStr =
-        g.averageAccuracy !== null ? `${Math.round(g.averageAccuracy)}%` : "—";
+        !isSkipped && g.averageAccuracy !== null
+          ? `${Math.round(g.averageAccuracy)}%`
+          : "—";
       currentPage.drawText(accStr, {
-        x: MARGIN + 350,
+        x: MARGIN + 380,
         y: y - 14,
         size: 8.5,
         font: fontBold,
         color: BRAND_NAVY,
       });
 
-      const rtStr = g.averageReactionTimeMs
-        ? `${(g.averageReactionTimeMs / 1000).toFixed(1)}s`
-        : "—";
-      currentPage.drawText(rtStr, {
-        x: MARGIN + 430,
+      // Avg Pace Column
+      const paceStr =
+        !isSkipped &&
+        typeof g.averageReactionTimeMs === "number" &&
+        g.averageReactionTimeMs > 0
+          ? `${(g.averageReactionTimeMs / 1000).toFixed(1)}s`
+          : "—";
+      currentPage.drawText(paceStr, {
+        x: MARGIN + 445,
         y: y - 14,
         size: 8,
         font: fontRegular,
-        color: TEXT_MUTED,
+        color: TEXT_DARK,
       });
 
-      y -= 22;
+      y -= 26;
     }
 
-    y -= 14;
+    y -= 8;
+
+    // Dedicated note for skipped games
+    const skippedGames = gamesList.filter(
+      (g) =>
+        g.gameStatus === "SKIPPED" ||
+        (g.averageAccuracy === null && Math.min(3, Math.max(0, g.levelsCompleted)) < 3)
+    );
+    for (const sg of skippedGames) {
+      const calloutText = `Activity Note: ${sg.gameName} was skipped during this quest session, so no performance score is available for this game. Skipping an activity is completely normal when a child feels tired or prefers different puzzle styles, and does not indicate any cognitive deficit.`;
+      const noteLines = wrapText(calloutText, fontRegular, 7.5, CONTENT_WIDTH - 24);
+      const calloutH = noteLines.length * 10 + 10;
+      checkPageBreak(calloutH + 4);
+
+      currentPage.drawRectangle({
+        x: MARGIN,
+        y: y - calloutH,
+        width: CONTENT_WIDTH,
+        height: calloutH,
+        color: BG_TIP_AMBER,
+        borderColor: BORDER_TIP_AMBER,
+        borderWidth: 0.5,
+      });
+
+      let noteY = y - 9;
+      for (const line of noteLines) {
+        currentPage.drawText(line, {
+          x: MARGIN + 12,
+          y: noteY,
+          size: 7.5,
+          font: fontRegular,
+          color: rgb(146 / 255, 64 / 255, 14 / 255),
+        });
+        noteY -= 10;
+      }
+      y -= calloutH + 8;
+    }
+
+    y -= 10;
 
     // =========================================================================
-    // 18-LEVEL GAMEPLAY BREAKDOWN MATRIX
+    // "18-LEVEL GAMEPLAY BREAKDOWN" MATRIX
     // =========================================================================
     checkPageBreak(115);
-    currentPage.drawText("18-LEVEL GAMEPLAY BREAKDOWN", {
+    currentPage.drawText("18-Level Gameplay Breakdown", {
       x: MARGIN,
       y,
-      size: 11,
+      size: 12,
       font: fontBold,
       color: BRAND_NAVY,
     });
-    y -= 16;
+    y -= 14;
 
     const levels = data.aiReport.levelWisePerformance || [];
-    const colWidth = CONTENT_WIDTH / 6;
+    const colWidth = (CONTENT_WIDTH - 15) / 6;
     const uniqueGames = [
       "stroop",
       "card-flip",
@@ -546,7 +1200,7 @@ export async function generateReportPdf(
       "story-sequencing",
     ];
     const gameLabels: Record<string, string> = {
-      stroop: "Stroop",
+      stroop: "Colour Tap",
       "card-flip": "Card Flip",
       pattern: "Pattern",
       "odd-one-out": "Odd One",
@@ -554,47 +1208,56 @@ export async function generateReportPdf(
       "story-sequencing": "Story Seq.",
     };
 
-    const boxHeight = 68;
+    const boxHeight = 62;
     for (let gIdx = 0; gIdx < uniqueGames.length; gIdx++) {
       const gKey = uniqueGames[gIdx];
       if (!gKey) continue;
-      const gx = MARGIN + gIdx * colWidth;
+      const gx = MARGIN + gIdx * (colWidth + 3);
 
-      currentPage.drawRectangle({
+      // Header block with rounded top
+      drawRoundedRect(currentPage, {
         x: gx,
         y: y - 16,
-        width: colWidth - 4,
+        width: colWidth,
         height: 16,
+        radius: 4,
         color: BRAND_NAVY,
       });
 
-      currentPage.drawText(gameLabels[gKey] || gKey, {
+      const label = gameLabels[gKey] || gKey;
+      currentPage.drawText(label, {
         x: gx + 4,
         y: y - 12,
-        size: 7.5,
+        size: 7,
         font: fontBold,
         color: WHITE,
       });
 
+      // Level rows
       for (let lvl = 1; lvl <= 3; lvl++) {
         const match = levels.find(
           (l) => l.gameKey === gKey && l.levelNumber === lvl
         );
-        const ly = y - 16 - lvl * 16;
+        const ly = y - 16 - lvl * 15;
 
-        currentPage.drawRectangle({
+        drawRoundedRect(currentPage, {
           x: gx,
           y: ly,
-          width: colWidth - 4,
-          height: 15,
-          color: lvl % 2 === 0 ? BG_LIGHT : WHITE,
-          borderColor: BORDER_COLOR,
+          width: colWidth,
+          height: 14,
+          radius: 2,
+          color: lvl % 2 === 0 ? BG_CARD_GREY : WHITE,
+          borderColor: BORDER_LIGHT,
           borderWidth: 0.5,
         });
 
         const accText =
-          match?.accuracy !== null && match?.accuracy !== undefined
+          match?.status === "SKIPPED"
+            ? "Skipped"
+            : match?.accuracy !== null && match?.accuracy !== undefined
             ? `${match.accuracy}%`
+            : match?.status === "NOT_ATTEMPTED" || !match
+            ? "—"
             : "Done";
         currentPage.drawText(`L${lvl}: ${accText}`, {
           x: gx + 4,
@@ -606,18 +1269,18 @@ export async function generateReportPdf(
       }
     }
 
-    y -= boxHeight + 20;
+    y -= boxHeight + 18;
 
     // =========================================================================
-    // OBSERVED STRENGTHS SECTION (Detailed, Evidence-Based Cards)
+    // PAGE 2+: OBSERVED STRENGTHS (Matching Reference Style)
     // =========================================================================
-    checkPageBreak(120);
-    currentPage.drawText("OBSERVED STRENGTHS & COGNITIVE PROFICIENCIES", {
+    checkPageBreak(140);
+    currentPage.drawText("Strengths", {
       x: MARGIN,
       y,
-      size: 11,
+      size: 14,
       font: fontBold,
-      color: BRAND_NAVY,
+      color: BRAND_GREEN,
     });
     y -= 14;
 
@@ -625,261 +1288,315 @@ export async function generateReportPdf(
     for (let sIdx = 0; sIdx < rawStrengths.length; sIdx++) {
       const st = formatStrength(rawStrengths[sIdx]);
 
-      const obsLines = wrapText(st.observation, fontRegular, 8, CONTENT_WIDTH - 20);
-      const evLines = wrapText(
-        `Gameplay Evidence: ${st.evidence}`,
-        fontRegular,
-        7.5,
-        CONTENT_WIDTH - 20
-      );
-      const relLines = wrapText(
-        `Educational Relevance: ${st.relevance}`,
-        fontOblique,
-        7.5,
-        CONTENT_WIDTH - 20
-      );
+      const obsLines = wrapText(st.observation, fontRegular, 8.5, CONTENT_WIDTH - 28);
+      const evLines = wrapText(st.evidence, fontRegular, 8, CONTENT_WIDTH - 140);
+      const relLines = wrapText(st.relevance, fontRegular, 8, CONTENT_WIDTH - 140);
 
-      const itemHeight =
-        24 +
-        obsLines.length * 11 +
-        evLines.length * 10 +
-        relLines.length * 10 +
+      const subSectionHeight =
+        16 +
+        Math.max(1, evLines.length) * 11 +
+        Math.max(1, relLines.length) * 11 +
+        6;
+
+      const cardHeight =
+        28 + // Header
+        obsLines.length * 12 +
+        8 + // gap
+        subSectionHeight +
         12;
 
-      checkPageBreak(itemHeight + 8);
+      checkPageBreak(cardHeight + 10);
 
-      // Card Background with Green Accent
-      currentPage.drawRectangle({
+      // Card Background (Soft Mint)
+      drawRoundedRect(currentPage, {
         x: MARGIN,
-        y: y - itemHeight,
+        y: y - cardHeight,
         width: CONTENT_WIDTH,
-        height: itemHeight,
-        color: BG_LIGHT,
-        borderColor: rgb(167 / 255, 243 / 255, 208 / 255), // light emerald
-        borderWidth: 1,
+        height: cardHeight,
+        radius: 11,
+        color: BG_CARD_MINT,
+        borderColor: BORDER_CARD_MINT,
+        borderWidth: 0.8,
       });
 
-      // Left Accent Strip
-      currentPage.drawRectangle({
-        x: MARGIN,
-        y: y - itemHeight,
-        width: 3.5,
-        height: itemHeight,
-        color: SUCCESS_GREEN,
-      });
-
-      // Header: Strength Heading + Domain
+      // Card Header Left: Skill / Heading
       currentPage.drawText(st.heading, {
-        x: MARGIN + 12,
-        y: y - 14,
-        size: 9,
+        x: MARGIN + 14,
+        y: y - 18,
+        size: 10.5,
         font: fontBold,
-        color: SUCCESS_GREEN,
+        color: BRAND_NAVY,
       });
 
-      currentPage.drawText(`· ${st.skill}`, {
-        x:
-          MARGIN +
-          14 +
-          fontBold.widthOfTextAtSize(st.heading, 9),
-        y: y - 14,
+      currentPage.drawText(st.skill, {
+        x: MARGIN + 14,
+        y: y - 30,
         size: 8,
-        font: fontOblique,
+        font: fontRegular,
         color: TEXT_MUTED,
       });
 
-      let currentTextY = y - 26;
+      // Card Header Right: Strong Badge Pill
+      const pillW = 70;
+      drawPill(currentPage, {
+        x: PAGE_WIDTH - MARGIN - pillW - 14,
+        y: y - 26,
+        width: pillW,
+        height: 17,
+        color: BRAND_GREEN,
+        label: "Strong",
+        font: fontBold,
+        fontSize: 7.5,
+      });
 
-      // Observation Body
+      // Body Observation
+      let curY = y - 44;
       for (const line of obsLines) {
         currentPage.drawText(line, {
-          x: MARGIN + 12,
-          y: currentTextY,
-          size: 8,
+          x: MARGIN + 14,
+          y: curY,
+          size: 8.5,
           font: fontRegular,
           color: TEXT_DARK,
         });
-        currentTextY -= 11;
+        curY -= 12;
       }
 
-      currentTextY -= 2;
+      curY -= 4;
 
-      // Performance Evidence
-      for (const line of evLines) {
-        currentPage.drawText(line, {
-          x: MARGIN + 12,
-          y: currentTextY,
+      // "Keep it growing" sub-section header
+      currentPage.drawText("Keep it growing", {
+        x: MARGIN + 14,
+        y: curY,
+        size: 8,
+        font: fontBold,
+        color: BRAND_NAVY,
+      });
+      curY -= 12;
+
+      // Row 1: Gameplay Evidence
+      currentPage.drawText("Gameplay evidence", {
+        x: MARGIN + 14,
+        y: curY,
+        size: 7.5,
+        font: fontBold,
+        color: BRAND_NAVY,
+      });
+
+      for (let l = 0; l < evLines.length; l++) {
+        currentPage.drawText(evLines[l]!, {
+          x: MARGIN + 120,
+          y: curY - l * 10.5,
           size: 7.5,
           font: fontRegular,
-          color: BRAND_NAVY,
+          color: TEXT_BODY,
         });
-        currentTextY -= 10;
       }
+      curY -= Math.max(1, evLines.length) * 10.5 + 4;
 
-      // Educational Relevance
-      for (const line of relLines) {
-        currentPage.drawText(line, {
-          x: MARGIN + 12,
-          y: currentTextY,
+      // Row 2: Educational Relevance
+      currentPage.drawText("Educational relevance", {
+        x: MARGIN + 14,
+        y: curY,
+        size: 7.5,
+        font: fontBold,
+        color: BRAND_NAVY,
+      });
+
+      for (let l = 0; l < relLines.length; l++) {
+        currentPage.drawText(relLines[l]!, {
+          x: MARGIN + 120,
+          y: curY - l * 10.5,
           size: 7.5,
-          font: fontOblique,
-          color: TEXT_MUTED,
+          font: fontRegular,
+          color: TEXT_BODY,
         });
-        currentTextY -= 10;
       }
 
-      y -= itemHeight + 10;
+      y -= cardHeight + 12;
     }
 
     y -= 10;
 
     // =========================================================================
-    // AREAS FOR FURTHER PRACTICE (Detailed Growth Cards)
+    // "AREAS OF IMPROVEMENT" / FURTHER PRACTICE (Matching Reference Style)
     // =========================================================================
-    checkPageBreak(120);
-    currentPage.drawText("AREAS FOR PLAYFUL PRACTICE & GROWTH", {
+    checkPageBreak(140);
+    currentPage.drawText("Areas of Improvement", {
       x: MARGIN,
       y,
-      size: 11,
+      size: 14,
       font: fontBold,
-      color: BRAND_NAVY,
+      color: BRAND_AMBER,
     });
-    y -= 14;
+    y -= 12;
+
+    currentPage.drawText(
+      "These are the skills where play and practice will help most. Pick one or two ideas, and let your child choose the ones that feel fun.",
+      {
+        x: MARGIN,
+        y,
+        size: 8,
+        font: fontRegular,
+        color: TEXT_MUTED,
+      }
+    );
+    y -= 16;
 
     const rawPractice = data.aiReport.areasForPractice || [];
     for (let pIdx = 0; pIdx < rawPractice.length; pIdx++) {
       const pr = formatPracticeArea(rawPractice[pIdx]);
 
-      const patLines = wrapText(pr.pattern, fontRegular, 8, CONTENT_WIDTH - 20);
-      const evLines = wrapText(
-        `Recorded Pattern: ${pr.evidence}`,
-        fontRegular,
-        7.5,
-        CONTENT_WIDTH - 20
-      );
-      const appLines = wrapText(
-        `Playful Recommendation: ${pr.approach}`,
-        fontRegular,
-        7.5,
-        CONTENT_WIDTH - 20
-      );
+      const patLines = wrapText(pr.pattern, fontRegular, 8.5, CONTENT_WIDTH - 28);
+      const evLines = wrapText(pr.evidence, fontRegular, 8, CONTENT_WIDTH - 140);
+      const appLines = wrapText(pr.approach, fontRegular, 8, CONTENT_WIDTH - 140);
 
-      const itemHeight =
-        24 +
-        patLines.length * 11 +
-        evLines.length * 10 +
-        appLines.length * 10 +
+      const subSectionHeight =
+        16 +
+        Math.max(1, evLines.length) * 11 +
+        Math.max(1, appLines.length) * 11 +
+        6;
+
+      const cardHeight =
+        28 + // Header
+        patLines.length * 12 +
+        8 + // gap
+        subSectionHeight +
         12;
 
-      checkPageBreak(itemHeight + 8);
+      checkPageBreak(cardHeight + 10);
 
-      // Card Background with Amber Accent
-      currentPage.drawRectangle({
+      // Card Background (Soft Peach)
+      drawRoundedRect(currentPage, {
         x: MARGIN,
-        y: y - itemHeight,
+        y: y - cardHeight,
         width: CONTENT_WIDTH,
-        height: itemHeight,
-        color: BG_LIGHT,
-        borderColor: rgb(254 / 255, 230 / 255, 138 / 255), // light amber
-        borderWidth: 1,
+        height: cardHeight,
+        radius: 11,
+        color: BG_CARD_PEACH,
+        borderColor: BORDER_CARD_PEACH,
+        borderWidth: 0.8,
       });
 
-      // Left Accent Strip
-      currentPage.drawRectangle({
-        x: MARGIN,
-        y: y - itemHeight,
-        width: 3.5,
-        height: itemHeight,
-        color: BRAND_AMBER,
-      });
-
+      // Card Header Left
       currentPage.drawText(pr.heading, {
-        x: MARGIN + 12,
-        y: y - 14,
-        size: 9,
+        x: MARGIN + 14,
+        y: y - 18,
+        size: 10.5,
         font: fontBold,
-        color: BRAND_AMBER,
+        color: BRAND_NAVY,
       });
 
-      currentPage.drawText(`· ${pr.skill}`, {
-        x:
-          MARGIN +
-          14 +
-          fontBold.widthOfTextAtSize(pr.heading, 9),
-        y: y - 14,
+      currentPage.drawText(pr.skill, {
+        x: MARGIN + 14,
+        y: y - 30,
         size: 8,
-        font: fontOblique,
+        font: fontRegular,
         color: TEXT_MUTED,
       });
 
-      let currentTextY = y - 26;
+      // Card Header Right: Area of Improvement Pill
+      const pillW = 115;
+      drawPill(currentPage, {
+        x: PAGE_WIDTH - MARGIN - pillW - 14,
+        y: y - 26,
+        width: pillW,
+        height: 17,
+        color: BRAND_AMBER,
+        label: "Area of Improvement",
+        font: fontBold,
+        fontSize: 7.5,
+      });
 
+      // Body Pattern
+      let curY = y - 44;
       for (const line of patLines) {
         currentPage.drawText(line, {
-          x: MARGIN + 12,
-          y: currentTextY,
-          size: 8,
+          x: MARGIN + 14,
+          y: curY,
+          size: 8.5,
           font: fontRegular,
           color: TEXT_DARK,
         });
-        currentTextY -= 11;
+        curY -= 12;
       }
 
-      currentTextY -= 2;
+      curY -= 4;
 
-      for (const line of evLines) {
-        currentPage.drawText(line, {
-          x: MARGIN + 12,
-          y: currentTextY,
+      // "Ideas for everyday practice" sub-section
+      currentPage.drawText(`Ideas for ${data.selectedClass || "children"}`, {
+        x: MARGIN + 14,
+        y: curY,
+        size: 8,
+        font: fontBold,
+        color: BRAND_NAVY,
+      });
+      curY -= 12;
+
+      // Row 1: Recorded Pattern
+      currentPage.drawText("Recorded pattern", {
+        x: MARGIN + 14,
+        y: curY,
+        size: 7.5,
+        font: fontBold,
+        color: BRAND_NAVY,
+      });
+
+      for (let l = 0; l < evLines.length; l++) {
+        currentPage.drawText(evLines[l]!, {
+          x: MARGIN + 120,
+          y: curY - l * 10.5,
           size: 7.5,
           font: fontRegular,
-          color: BRAND_NAVY,
+          color: TEXT_BODY,
         });
-        currentTextY -= 10;
       }
+      curY -= Math.max(1, evLines.length) * 10.5 + 4;
 
-      for (const line of appLines) {
-        currentPage.drawText(line, {
-          x: MARGIN + 12,
-          y: currentTextY,
+      // Row 2: Playful Recommendation
+      currentPage.drawText("Playful recommendation", {
+        x: MARGIN + 14,
+        y: curY,
+        size: 7.5,
+        font: fontBold,
+        color: BRAND_NAVY,
+      });
+
+      for (let l = 0; l < appLines.length; l++) {
+        currentPage.drawText(appLines[l]!, {
+          x: MARGIN + 120,
+          y: curY - l * 10.5,
           size: 7.5,
           font: fontRegular,
-          color: BRAND_AMBER,
+          color: TEXT_BODY,
         });
-        currentTextY -= 10;
       }
 
-      y -= itemHeight + 10;
+      y -= cardHeight + 12;
     }
 
     y -= 14;
 
     // =========================================================================
-    // PAGE 2+: PARENT-FRIENDLY HOME ACTIVITIES (Full Step-by-Step Cards)
+    // PARENT-FRIENDLY HOME ACTIVITIES & PRACTICE ROUTINES
     // =========================================================================
-    // Always start Parent Guidance with a dedicated section break
-    checkPageBreak(160);
+    checkPageBreak(140);
 
-    currentPage.drawRectangle({
+    // Section Banner
+    const actBannerH = 36;
+    drawRoundedRect(currentPage, {
       x: MARGIN,
-      y: y - 32,
+      y: y - actBannerH,
       width: CONTENT_WIDTH,
-      height: 32,
+      height: actBannerH,
+      radius: 9,
       color: BRAND_NAVY,
     });
 
-    currentPage.drawRectangle({
-      x: MARGIN,
-      y: y - 3,
-      width: CONTENT_WIDTH,
-      height: 3,
-      color: BRAND_GOLD,
-    });
-
     currentPage.drawText("PARENT-FRIENDLY HOME ACTIVITIES & PRACTICE ROUTINES", {
-      x: MARGIN + 12,
-      y: y - 16,
-      size: 10,
+      x: MARGIN + 14,
+      y: y - 17,
+      size: 9.5,
       font: fontBold,
       color: BRAND_GOLD,
     });
@@ -887,46 +1604,45 @@ export async function generateReportPdf(
     currentPage.drawText(
       "Screen-free, enjoyable household activities designed to nurture developing skills through everyday family play",
       {
-        x: MARGIN + 12,
-        y: y - 26,
+        x: MARGIN + 14,
+        y: y - 29,
         size: 7.5,
         font: fontRegular,
         color: WHITE,
       }
     );
 
-    y -= 44;
+    y -= actBannerH + 14;
 
     const activities = data.aiReport.parentRecommendations || [];
     for (let aIdx = 0; aIdx < activities.length; aIdx++) {
       const act = formatHomeActivity(activities[aIdx]);
 
-      // Pre-wrap all lines to compute exact card height
       const skillsStr = `Skills Practiced: ${act.skills.join(", ")}`;
-      const skillsLines = wrapText(skillsStr, fontBold, 8, CONTENT_WIDTH - 24);
+      const skillsLines = wrapText(skillsStr, fontBold, 8, CONTENT_WIDTH - 28);
 
       const matStr = `Materials: ${act.materials.join(", ")}`;
-      const matLines = wrapText(matStr, fontRegular, 8, CONTENT_WIDTH - 24);
+      const matLines = wrapText(matStr, fontRegular, 8, CONTENT_WIDTH - 28);
 
       const instructionStepLines: string[][] = act.instructions.map(
-        (step, idx) => wrapText(`${idx + 1}. ${step}`, fontRegular, 8, CONTENT_WIDTH - 30)
+        (step, idx) =>
+          wrapText(`${idx + 1}. ${step}`, fontRegular, 8, CONTENT_WIDTH - 36)
       );
 
       const oppLines = wrapText(
         `Learning Opportunity: ${act.opportunity}`,
         fontRegular,
         7.5,
-        CONTENT_WIDTH - 24
+        CONTENT_WIDTH - 28
       );
 
       const tipLines = wrapText(
         `Parent Tip: ${act.tip}`,
         fontOblique,
         7.5,
-        CONTENT_WIDTH - 32
+        CONTENT_WIDTH - 40
       );
 
-      // Compute total card height
       let stepsHeight = 0;
       for (const sLines of instructionStepLines) {
         stepsHeight += sLines.length * 10.5 + 3;
@@ -935,35 +1651,37 @@ export async function generateReportPdf(
       const tipBoxHeight = tipLines.length * 10 + 12;
 
       const cardTotalHeight =
-        26 + // Header with Title & Duration
+        28 + // Header strip
         skillsLines.length * 11 +
         matLines.length * 11 +
         12 + // Instructions Title
         stepsHeight +
         oppLines.length * 10 +
         tipBoxHeight +
-        16; // Margins & Padding
+        16;
 
       checkPageBreak(cardTotalHeight + 10);
 
       // Card Outer Box
-      currentPage.drawRectangle({
+      drawRoundedRect(currentPage, {
         x: MARGIN,
         y: y - cardTotalHeight,
         width: CONTENT_WIDTH,
         height: cardTotalHeight,
-        color: BG_LIGHT,
-        borderColor: BORDER_COLOR,
+        radius: 11,
+        color: BG_CARD_GREY,
+        borderColor: BORDER_LIGHT,
         borderWidth: 1,
       });
 
       // Card Header Banner
-      currentPage.drawRectangle({
+      drawRoundedRect(currentPage, {
         x: MARGIN,
         y: y - 24,
         width: CONTENT_WIDTH,
         height: 24,
-        color: rgb(241 / 255, 245 / 255, 249 / 255), // light slate
+        radius: 11,
+        color: rgb(238 / 255, 242 / 255, 246 / 255),
       });
 
       currentPage.drawText(`Activity ${aIdx + 1}: ${act.title}`, {
@@ -974,16 +1692,17 @@ export async function generateReportPdf(
         color: BRAND_NAVY,
       });
 
-      currentPage.drawText(`Duration: ${act.duration}`, {
+      const durText = `Duration: ${act.duration}`;
+      currentPage.drawText(durText, {
         x:
           PAGE_WIDTH -
           MARGIN -
-          fontBold.widthOfTextAtSize(`Duration: ${act.duration}`, 8) -
+          fontBold.widthOfTextAtSize(durText, 8) -
           12,
         y: y - 16,
         size: 8,
         font: fontBold,
-        color: BRAND_CYAN,
+        color: BRAND_BLUE,
       });
 
       let cardY = y - 36;
@@ -1056,13 +1775,14 @@ export async function generateReportPdf(
       cardY -= 4;
 
       // Parent Tip Callout Box
-      currentPage.drawRectangle({
+      drawRoundedRect(currentPage, {
         x: MARGIN + 10,
         y: cardY - tipBoxHeight + 8,
         width: CONTENT_WIDTH - 20,
         height: tipBoxHeight,
-        color: SOFT_AMBER_BG,
-        borderColor: rgb(253 / 255, 230 / 255, 138 / 255),
+        radius: 6,
+        color: BG_TIP_AMBER,
+        borderColor: BORDER_TIP_AMBER,
         borderWidth: 0.5,
       });
 
@@ -1081,32 +1801,214 @@ export async function generateReportPdf(
       y -= cardTotalHeight + 12;
     }
 
-    // =========================================================================
-    // IMPORTANT EDUCATIONAL ASSESSMENT DISCLAIMER
-    // =========================================================================
-    checkPageBreak(65);
+    y -= 10;
 
-    currentPage.drawRectangle({
+    // =========================================================================
+    // "EVERYONE CAN HELP" (Venn Diagram & Ecosystem Guidance - Reference Page 3)
+    // =========================================================================
+    checkPageBreak(170);
+
+    currentPage.drawText("Everyone can help", {
       x: MARGIN,
-      y: y - 50,
-      width: CONTENT_WIDTH,
-      height: 50,
-      color: BG_LIGHT,
-      borderColor: BORDER_COLOR,
-      borderWidth: 0.5,
+      y,
+      size: 13,
+      font: fontBold,
+      color: BRAND_NAVY,
+    });
+    y -= 12;
+
+    currentPage.drawText(
+      "Children grow best when family, school and community support them together.",
+      {
+        x: MARGIN,
+        y,
+        size: 8,
+        font: fontRegular,
+        color: TEXT_MUTED,
+      }
+    );
+    y -= 16;
+
+    const ecosystemBoxH = 120;
+    // Left: Venn diagram
+    const vennCX = MARGIN + 68;
+    const vennCY = y - ecosystemBoxH / 2 + 5;
+    drawVennDiagram(currentPage, fontBold, {
+      cx: vennCX,
+      cy: vennCY,
+      radius: 38,
     });
 
-    currentPage.drawText("IMPORTANT EDUCATIONAL ASSESSMENT DISCLAIMER", {
-      x: MARGIN + 12,
+    // Right: 2 Cards (School and Community)
+    const rightCardsX = MARGIN + 148;
+    const rightCardsW = CONTENT_WIDTH - 148;
+    const cardH = (ecosystemBoxH - 8) / 2;
+
+    // Card 1: For teachers (School)
+    drawRoundedRect(currentPage, {
+      x: rightCardsX,
+      y: y - cardH,
+      width: rightCardsW,
+      height: cardH,
+      radius: 8,
+      color: BG_LIGHT_BLUE,
+    });
+
+    currentPage.drawText("For teachers (School)", {
+      x: rightCardsX + 10,
       y: y - 14,
-      size: 7.5,
+      size: 8.5,
       font: fontBold,
       color: BRAND_NAVY,
     });
 
+    currentPage.drawText(
+      "• Reasoning: Use circle-time pattern games such as clap, tap, stomp.",
+      {
+        x: rightCardsX + 10,
+        y: y - 26,
+        size: 7.5,
+        font: fontRegular,
+        color: TEXT_BODY,
+      }
+    );
+
+    currentPage.drawText(
+      "• Planning: Use picture sequence cards in language time for storytelling.",
+      {
+        x: rightCardsX + 10,
+        y: y - 37,
+        size: 7.5,
+        font: fontRegular,
+        color: TEXT_BODY,
+      }
+    );
+
+    currentPage.drawText(
+      `• Confidence: Give ${firstName} helper roles that exercise memory and focus.`,
+      {
+        x: rightCardsX + 10,
+        y: y - 48,
+        size: 7.5,
+        font: fontRegular,
+        color: TEXT_BODY,
+      }
+    );
+
+    // Card 2: For parents and community
+    drawRoundedRect(currentPage, {
+      x: rightCardsX,
+      y: y - ecosystemBoxH,
+      width: rightCardsW,
+      height: cardH,
+      radius: 8,
+      color: rgb(255 / 255, 241 / 255, 242 / 255), // soft rose
+    });
+
+    currentPage.drawText("For parents and the community", {
+      x: rightCardsX + 10,
+      y: y - cardH - 14,
+      size: 8.5,
+      font: fontBold,
+      color: BRAND_NAVY,
+    });
+
+    currentPage.drawText(
+      "• Visit local library story hours and let child tell stories from pictures.",
+      {
+        x: rightCardsX + 10,
+        y: y - cardH - 26,
+        size: 7.5,
+        font: fontRegular,
+        color: TEXT_BODY,
+      }
+    );
+
+    currentPage.drawText(
+      "• Join playground games: tag, hopscotch, and simple ball rallies.",
+      {
+        x: rightCardsX + 10,
+        y: y - cardH - 37,
+        size: 7.5,
+        font: fontRegular,
+        color: TEXT_BODY,
+      }
+    );
+
+    currentPage.drawText(
+      "• Invite grandparents and family for board games and festive sorting play.",
+      {
+        x: rightCardsX + 10,
+        y: y - cardH - 48,
+        size: 7.5,
+        font: fontRegular,
+        color: TEXT_BODY,
+      }
+    );
+
+    y -= ecosystemBoxH + 14;
+
+    // "A note for families" card
+    const noteLine1 =
+      "Every child grows at their own pace, and play is the best way for thinking skills to grow. Pick one or two ideas to try this month and enjoy them together. Small, playful steps add up quickly.";
+    const noteLine2 =
+      "This report highlights your child's current strengths and growing areas based on a single play session. It is not a diagnosis or a label. Children develop at their own pace, and these observations are a starting point for support at home.";
+    const lines1 = wrapText(noteLine1, fontRegular, 7.5, CONTENT_WIDTH - 24);
+    const lines2 = wrapText(noteLine2, fontRegular, 7.2, CONTENT_WIDTH - 24);
+    const noteHeight = 22 + lines1.length * 10 + 4 + lines2.length * 10 + 4;
+
+    checkPageBreak(noteHeight + 10);
+
+    drawRoundedRect(currentPage, {
+      x: MARGIN,
+      y: y - noteHeight,
+      width: CONTENT_WIDTH,
+      height: noteHeight,
+      radius: 8,
+      color: BG_CARD_GREY,
+    });
+
+    currentPage.drawText("A note for families", {
+      x: MARGIN + 12,
+      y: y - 14,
+      size: 8.5,
+      font: fontBold,
+      color: BRAND_NAVY,
+    });
+
+    let ny = y - 27;
+    for (const l of lines1) {
+      currentPage.drawText(l, {
+        x: MARGIN + 12,
+        y: ny,
+        size: 7.5,
+        font: fontRegular,
+        color: TEXT_BODY,
+      });
+      ny -= 10;
+    }
+    ny -= 3;
+    for (const l of lines2) {
+      currentPage.drawText(l, {
+        x: MARGIN + 12,
+        y: ny,
+        size: 7.2,
+        font: fontRegular,
+        color: TEXT_MUTED,
+      });
+      ny -= 10;
+    }
+
+    y -= noteHeight + 12;
+
+    // =========================================================================
+    // IMPORTANT EDUCATIONAL ASSESSMENT DISCLAIMER
+    // =========================================================================
+    checkPageBreak(50);
+
     const disclaimerText =
       data.aiReport.dataLimitations ||
-      "This report provides educational observations based solely on child digital gameplay across 18 levels. It is designed to encourage learning curiosity, celebrate strengths, and recommend positive everyday play. It is not a clinical assessment, medical diagnosis, or psychological evaluation.";
+      "This report provides educational observations based solely on digital gameplay across 18 levels. It is designed to celebrate learning curiosity, recognize strengths, and suggest everyday home play. It is not a clinical assessment, medical diagnosis, or psychological evaluation.";
 
     const discLines = wrapText(
       disclaimerText,
@@ -1114,13 +2016,33 @@ export async function generateReportPdf(
       7,
       CONTENT_WIDTH - 24
     );
+    const discH = 18 + discLines.length * 9 + 4;
 
-    let dy = y - 25;
+    drawRoundedRect(currentPage, {
+      x: MARGIN,
+      y: y - discH,
+      width: CONTENT_WIDTH,
+      height: discH,
+      radius: 7,
+      color: BG_CARD_GREY,
+      borderColor: BORDER_LIGHT,
+      borderWidth: 0.5,
+    });
+
+    currentPage.drawText("IMPORTANT EDUCATIONAL ASSESSMENT DISCLAIMER", {
+      x: MARGIN + 12,
+      y: y - 12,
+      size: 7,
+      font: fontBold,
+      color: BRAND_NAVY,
+    });
+
+    let dy = y - 22;
     for (const dl of discLines.slice(0, 3)) {
       currentPage.drawText(dl, {
         x: MARGIN + 12,
         y: dy,
-        size: 7,
+        size: 6.8,
         font: fontRegular,
         color: TEXT_MUTED,
       });
@@ -1128,18 +2050,37 @@ export async function generateReportPdf(
     }
 
     // =========================================================================
-    // DYNAMIC PAGE NUMBERING & FOOTERS (All Pages)
+    // DYNAMIC PAGE NUMBERING & FOOTERS (All Pages Matching Reference)
     // =========================================================================
     const totalPages = doc.getPageCount();
     for (let i = 0; i < totalPages; i++) {
       const page = doc.getPage(i);
-      const footerText = `Page ${i + 1} of ${totalPages} · OrionKids Cognitive Exploration Platform · Generated on ${new Date(
-        data.reportGeneratedAt
-      ).toLocaleDateString()}`;
 
-      page.drawText(footerText, {
-        x: MARGIN,
-        y: MARGIN - 15,
+      // Separator line
+      page.drawLine({
+        start: { x: MARGIN, y: MARGIN - 2 },
+        end: { x: PAGE_WIDTH - MARGIN, y: MARGIN - 2 },
+        thickness: 0.5,
+        color: BORDER_LIGHT,
+      });
+
+      // Left: Reference-exact accreditation
+      page.drawText(
+        "ORIONKIDS | Where Every Kid Is a Star | Reviewed and approved by an Orionkids psychologist",
+        {
+          x: MARGIN,
+          y: MARGIN - 14,
+          size: 7,
+          font: fontRegular,
+          color: TEXT_MUTED,
+        }
+      );
+
+      // Right: Page number
+      const pageNumText = `Page ${i + 1}`;
+      page.drawText(pageNumText, {
+        x: PAGE_WIDTH - MARGIN - fontRegular.widthOfTextAtSize(pageNumText, 7.5),
+        y: MARGIN - 14,
         size: 7.5,
         font: fontRegular,
         color: TEXT_MUTED,

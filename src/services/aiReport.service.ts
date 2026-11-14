@@ -107,7 +107,11 @@ export const AiStructuredReportSchema = z.object({
       gameKey: z.string(),
       gameName: z.string(),
       cognitiveDomain: z.string(),
-      levelsCompleted: z.number(),
+      gameStatus: z
+        .enum(["COMPLETED", "SKIPPED", "IN_PROGRESS", "NOT_ATTEMPTED"])
+        .default("COMPLETED")
+        .or(z.string()),
+      levelsCompleted: z.number().int().min(0).max(3),
       averageAccuracy: z.number().nullable(),
       averageReactionTimeMs: z.number().nullable(),
       summary: z.string(),
@@ -163,6 +167,7 @@ export interface GameplayReportInput {
     gameKey: string;
     gameName: string;
     domain: string;
+    gameStatus?: string;
     levelsCompleted: number;
     averageAccuracy: number | null;
     averageReactionTimeMs: number | null;
@@ -202,14 +207,26 @@ CORE PRINCIPLES & GUIDELINES
      * A status of "NOT_COMPLETED" or missing attempt means the child did not play or finish that level; it is NOT a score of 0% and must never be characterized as a failure.
      * An accuracy of 0% must be interpreted constructively according to the task rules rather than as incapacity.
 
-2. EDUCATIONAL INTERPRETATION MAPPINGS:
-   Frame all interpretations around the canonical six OrionKids cognitive domain mappings:
-   - Stroop Colour-Word: Focus & Interference Resistance (Selective visual attention, impulse control, cognitive inhibition, filtering conflicting semantic cues).
-   - Card Flip: Visual Working Memory (Short-term spatial recall, pair association, holding item positions active in memory).
-   - Pattern Recognition: Pattern Induction & Extrapolation (Rule abstraction, sequence prediction, discovering visual transformation rules).
-   - Odd One Out: Visual Feature Acuity (Categorization, invariant feature discrimination, identifying subtle visual anomalies across shape, color, and orientation).
-   - Rule Discovery: Hypothesis Testing & Flexibility (Inductive reasoning, cognitive flexibility, testing mental hypotheses, adapting when categorization rules shift).
-   - Story Sequencing: Temporal & Narrative Sequencing (Logical timeline reconstruction, causal reasoning, understanding chronological beginning-middle-end order).
+2. PARENT-FRIENDLY DOMAIN NAMES & GRADE 5–7 READABILITY:
+   Frame all interpretations around the canonical six OrionKids cognitive domain mappings using clear, everyday language:
+   - Stroop Colour-Word: Staying Focused (Focus & Impulse Control) — Paying attention, pausing before clicking, and ignoring distracting words.
+   - Card Flip: Remembering Pictures (Visual Memory) — Remembering pictures and where cards hide on the board.
+   - Pattern Recognition: Finding Patterns (Pattern Recognition) — Spotting patterns and working out what comes next.
+   - Odd One Out: Spotting Differences (Visual Attention) — Looking closely to spot differences and finding objects that don't belong.
+   - Rule Discovery: Trying New Rules (Mental Flexibility) — Trying out new ideas and adapting when the rules change.
+   - Story Sequencing: Remembering Story Order (Story Sequencing) — Putting story cards in clear beginning-to-end order.
+
+   TARGET GRADE 5–7 READING LEVEL:
+   - Write every section in warm, encouraging, plain English that any parent can understand in under 30 seconds.
+   - Keep sentences short, active, and accessible. Avoid all clinical, neuropsychological, psychometric, and diagnostic jargon.
+   - Use plain phrases instead of academic terms:
+     * Instead of "inhibitory control" or "interference resistance", use "staying focused and pausing before clicking".
+     * Instead of "visuospatial working memory", use "remembering pictures and card locations".
+     * Instead of "pattern induction & extrapolation", use "finding patterns and guessing what comes next".
+     * Instead of "visual feature acuity" or "invariant feature discrimination", use "spotting differences between pictures".
+     * Instead of "hypothesis testing", use "trying out new ideas or guessing the secret rule".
+     * Instead of "cognitive flexibility" or "perseverative errors", use "adapting to a new rule rather than sticking to the old one".
+     * Instead of "temporal and narrative sequencing", use "putting story events in order from beginning to end".
 
 3. NON-CLINICAL & SUPPORTIVE ETHICS:
    - This report is an educational gameplay summary, NOT a clinical, neurological, psychiatric, or diagnostic assessment.
@@ -218,6 +235,19 @@ CORE PRINCIPLES & GUIDELINES
    - Do NOT treat gameplay accuracy in a single digital session as measuring a fixed cognitive ability.
    - Use supportive, warm, constructive, and dignified educational language.
    - Absolutely NEVER describe a child as weak, deficient, incapable, failing, or slow. Frame growth areas as exciting emerging frontiers.
+
+4. SKIPPED GAMES & DATA INTEGRITY:
+   - If a game has gameStatus "SKIPPED" (or levelsCompleted < 3 with null accuracy):
+     * In gameWiseAnalysis:
+       - summary MUST state: "This activity was skipped during the quest session, so no performance score is available for this game. Skipping an activity is completely normal when a child feels tired or prefers different puzzle styles, and does not indicate any cognitive deficit."
+       - averageAccuracy MUST be null (never 0% or fake score).
+       - averageReactionTimeMs MUST be null (never fake pace).
+       - levelsCompleted MUST be the actual unique completed levels count (0 to 3, never exceeding 3).
+       - gameStatus MUST be "SKIPPED".
+     * In observedStrengths and areasForPractice:
+       - NEVER treat a skipped game as a weakness, deficit, or practice area based on low/missing score.
+       - Only draw practice areas from games that were genuinely completed and scored.
+   - Levels Completed for any game must NEVER exceed 3 (always bounded 0 to 3).
 
 ================================================================================
 DETAILED SECTION REQUIREMENTS
@@ -495,6 +525,16 @@ ${g.levels
       parsedJson.homeActivities = parsedJson.parentRecommendations;
     }
 
+    if (Array.isArray(parsedJson.gameWiseAnalysis)) {
+      parsedJson.gameWiseAnalysis = parsedJson.gameWiseAnalysis.map((g: any) => ({
+        ...g,
+        levelsCompleted: Math.min(
+          3,
+          Math.max(0, typeof g.levelsCompleted === "number" ? g.levelsCompleted : 0)
+        ),
+      }));
+    }
+
     const validated = AiStructuredReportSchema.parse(parsedJson);
 
     logger.info(
@@ -556,6 +596,7 @@ interface GameStats {
   gameKey: string;
   gameName: string;
   domain: string;
+  gameStatus: string;
   levelsCompleted: number;
   averageAccuracy: number | null;
   averageReactionTimeMs: number | null;
@@ -579,131 +620,148 @@ export function generateRuleBasedReport(
   // Build canonical game list with real or defaulted metrics
   const analyzedGames: GameStats[] = CANONICAL_GAMES.map((cg) => {
     const recorded = games.find((g) => g.gameKey === cg.key);
+    const rawDone = recorded?.levelsCompleted ?? 0;
+    const clampedDone = Math.min(3, Math.max(0, rawDone));
+    const isSkipped = recorded?.gameStatus === "SKIPPED";
     return {
       gameId: cg.id,
       gameKey: cg.key,
       gameName: cg.name,
       domain: cg.domain,
-      levelsCompleted: recorded?.levelsCompleted ?? 0,
-      averageAccuracy: recorded?.averageAccuracy ?? null,
-      averageReactionTimeMs: recorded?.averageReactionTimeMs ?? null,
+      gameStatus: isSkipped
+        ? "SKIPPED"
+        : recorded?.gameStatus || (clampedDone === 3 ? "COMPLETED" : "NOT_COMPLETED"),
+      levelsCompleted: clampedDone,
+      averageAccuracy: isSkipped ? null : (recorded?.averageAccuracy ?? null),
+      averageReactionTimeMs: isSkipped ? null : (recorded?.averageReactionTimeMs ?? null),
       levels: recorded?.levels || [],
     };
   });
 
-  // 1. GAME-WISE ANALYSIS (70-110 words per game with genuine evidence)
+  // 1. GAME-WISE ANALYSIS (Written in plain English, Grade 5–7 friendly reading level)
   const gameWiseAnalysis = analyzedGames.map((g) => {
-    const acc = g.averageAccuracy;
-    const rt = g.averageReactionTimeMs;
-    const done = g.levelsCompleted;
-    const l1 = g.levels.find((l) => l.levelNumber === 1)?.accuracy;
-    const l2 = g.levels.find((l) => l.levelNumber === 2)?.accuracy;
-    const l3 = g.levels.find((l) => l.levelNumber === 3)?.accuracy;
+    const isGameSkipped = g.gameStatus === "SKIPPED";
+    const done = Math.min(3, Math.max(0, g.levelsCompleted));
+    const acc = isGameSkipped ? null : g.averageAccuracy;
+    const rt = isGameSkipped ? null : g.averageReactionTimeMs;
+    const l1 = isGameSkipped ? null : g.levels.find((l) => l.levelNumber === 1)?.accuracy;
+    const l2 = isGameSkipped ? null : g.levels.find((l) => l.levelNumber === 2)?.accuracy;
+    const l3 = isGameSkipped ? null : g.levels.find((l) => l.levelNumber === 3)?.accuracy;
 
-    const rtText = rt ? ` with an average decision pace of ${(rt / 1000).toFixed(1)} seconds per trial` : "";
+    const rtText = rt ? ` with an average pace of ${(rt / 1000).toFixed(1)} seconds per trial` : "";
     let summary = "";
     const strengths: string[] = [];
     const practice: string[] = [];
 
-    switch (g.gameKey) {
-      case "stroop":
-        summary = `${child.childName} explored Stroop Colour-Word (${g.domain}), completing ${done}/3 levels${acc !== null ? ` with ${acc}% overall accuracy` : ""}${rtText}. This activity measured the ability to maintain focused visual attention and suppress interfering word cues while naming font colors under cognitive interference. `;
-        if (acc !== null && acc >= 85) {
-          summary += `Recorded performance was particularly strong in foundational levels (Level 1: ${l1 ?? acc}%, Level 2: ${l2 ?? acc}%), demonstrating confident cognitive control and mature impulse filtering when navigating conflicting stimuli.`;
-          strengths.push(`Strong focus and interference resistance (${acc}% average accuracy).`);
-        } else if (acc !== null && acc >= 60) {
-          summary += `Showed steady focus across early levels (Level 1: ${l1 ?? acc}%) while navigating increased interference in Level 3 (${l3 ?? acc}%), demonstrating resilience when problem complexity intensified.`;
-          strengths.push(`Persistent attention during challenging multi-color interference trials.`);
-          practice.push(`Targeted verbal response games to reinforce cognitive inhibition under distraction.`);
-        } else {
-          summary += `Engaged actively through ${done} level attempts, showing willingness to navigate demanding visual-verbal conflicts. Additional low-pressure practice will help strengthen impulse filtering during rapid color naming.`;
-          practice.push(`Playful everyday games exercising selective attention and impulse control.`);
-        }
-        break;
+    if (isGameSkipped) {
+      summary = `This activity was skipped during the quest session, so no performance score is available for this game. Skipping an activity is completely normal when a child feels tired or prefers different puzzle styles, and does not indicate any cognitive deficit.`;
+      if (done > 0) {
+        summary += ` ${child.childName} explored Level 1 before moving forward, showing positive curiosity.`;
+        strengths.push(`Explored foundational mechanics before transitioning to the next challenge.`);
+      }
+      practice.push(`Enjoyable, low-pressure home play with ${g.domain.toLowerCase()}.`);
+    } else {
+      switch (g.gameKey) {
+        case "stroop":
+          summary = `${child.childName} played Stroop Colour-Word (${g.domain}), completing ${done}/3 levels${acc !== null ? ` with ${acc}% overall accuracy` : ""}${rtText}. This activity looked at how well ${child.childName} stays focused and pauses before clicking, even when the color word tries to trick them. `;
+          if (acc !== null && acc >= 85) {
+            summary += `Recorded performance was very strong in the early levels (Level 1: ${l1 ?? acc}%, Level 2: ${l2 ?? acc}%), showing great focus and steady self-control when choosing colors.`;
+            strengths.push(`Great focus and self-control when ignoring word distractions (${acc}% average accuracy).`);
+          } else if (acc !== null && acc >= 60) {
+            summary += `Showed steady focus across early levels (Level 1: ${l1 ?? acc}%) while keeping a positive attitude as the words became trickier in Level 3 (${l3 ?? acc}%).`;
+            strengths.push(`Kept focused and worked through tricky color challenges.`);
+            practice.push(`Fun games at home like Simon Says to practice pausing before reacting.`);
+          } else {
+            summary += `Engaged actively through ${done} level attempts, showing a great willingness to try challenging color puzzles. Extra practice through fun games will help them pause and choose with confidence.`;
+            practice.push(`Playful everyday games that practice pausing and staying focused.`);
+          }
+          break;
 
-      case "card-flip":
-        summary = `${child.childName} participated in Card Flip Memory Match (${g.domain}), completing ${done}/3 levels${acc !== null ? ` with ${acc}% average accuracy` : ""}${rtText}. This challenge evaluated visual working memory, spatial pair recall, and the capacity to mentally retain hidden card locations across consecutive turns. `;
-        if (acc !== null && acc >= 85) {
-          summary += `Demonstrated exceptional spatial recall across all evaluated grids (Level 1: ${l1 ?? acc}%, Level 2: ${l2 ?? acc}%), locating matching pairs efficiently and exhibiting mature short-term memory encoding.`;
-          strengths.push(`High spatial recall accuracy (${acc}%) across card memory grids.`);
-        } else if (acc !== null && acc >= 60) {
-          summary += `Successfully resolved pair matching in foundational levels with solid recall, navigating larger grid dimensions in later levels with careful, methodical card selections.`;
-          strengths.push(`Systematic spatial scanning strategy during memory pair matching.`);
-          practice.push(`Memory card games with gradually increasing grid sizes at home.`);
-        } else {
-          summary += `Persisted through multiple pair-matching trials, demonstrating positive effort as grid complexity expanded. Continued playful practice with visual recall games will nurture working memory capacity.`;
-          practice.push(`Low-pressure picture-matching and spatial hiding games.`);
-        }
-        break;
+        case "card-flip":
+          summary = `${child.childName} played Cosmic Card Flip (${g.domain}), completing ${done}/3 levels${acc !== null ? ` with ${acc}% average accuracy` : ""}${rtText}. This game looked at how well ${child.childName} remembers pictures and keeps track of where matching cards hide on the board. `;
+          if (acc !== null && acc >= 85) {
+            summary += `Showed excellent picture memory across the grids (Level 1: ${l1 ?? acc}%, Level 2: ${l2 ?? acc}%), finding matching pairs quickly and remembering where planets hid.`;
+            strengths.push(`Excellent memory for pictures and card locations (${acc}% average accuracy).`);
+          } else if (acc !== null && acc >= 60) {
+            summary += `Found matching pairs smoothly in the starter levels, using a calm and thoughtful approach as more cards were added to the grid.`;
+            strengths.push(`Methodical search strategy when hunting for matching pairs.`);
+            practice.push(`Classic matching card games with cards placed face down at home.`);
+          } else {
+            summary += `Tried hard through multiple card-matching rounds, showing great patience as the board grew larger. Fun picture games at home will help grow their memory skills.`;
+            practice.push(`Casual matching card games starting with 4 to 6 pairs.`);
+          }
+          break;
 
-      case "pattern":
-        summary = `${child.childName} engaged with Pattern Recognition (${g.domain}), completing ${done}/3 levels${acc !== null ? ` with ${acc}% average accuracy` : ""}${rtText}. The activity assessed the child's capacity for pattern induction, rule extrapolation, and predicting missing sequence elements across geometric and symbolic progressions. `;
-        if (acc !== null && acc >= 85) {
-          summary += `Identified sequence rules with high precision across levels (Level 1: ${l1 ?? acc}%, Level 2: ${l2 ?? acc}%), showing excellent structural logic and immediate recognition of repeating transformations.`;
-          strengths.push(`Precise pattern extrapolation (${acc}%) across sequence challenges.`);
-        } else if (acc !== null && acc >= 60) {
-          summary += `Grasped single-attribute sequence patterns readily, applying good logical reasoning when identifying what came next in progressively complex pattern sequences.`;
-          strengths.push(`Sound deductive reasoning on sequential transformation puzzles.`);
-          practice.push(`Everyday pattern building using physical building blocks and beads.`);
-        } else {
-          summary += `Attempted multi-step sequence puzzles with enthusiasm. Continued exploration with hands-on rhythm and shape patterns will reinforce sequence rule abstraction.`;
-          practice.push(`Hands-on shape and color sequence creation.`);
-        }
-        break;
+        case "pattern":
+          summary = `${child.childName} played Pattern Recognition (${g.domain}), completing ${done}/3 levels${acc !== null ? ` with ${acc}% average accuracy` : ""}${rtText}. This activity looked at how well ${child.childName} spots visual patterns and works out what shape or color comes next. `;
+          if (acc !== null && acc >= 85) {
+            summary += `Spotted the repeating sequences with ease across levels (Level 1: ${l1 ?? acc}%, Level 2: ${l2 ?? acc}%), quickly picking the missing space tile every time.`;
+            strengths.push(`Quickly spots repeating patterns and sequence rules (${acc}% accuracy).`);
+          } else if (acc !== null && acc >= 60) {
+            summary += `Solved color and shape patterns easily, showing good logic when thinking about what should come next in the sequence.`;
+            strengths.push(`Good logical thinking on visual pattern puzzles.`);
+            practice.push(`Building repeating patterns using colored blocks, legos, or beads.`);
+          } else {
+            summary += `Enthusiastically worked through pattern sequences. Practicing with real-world objects at home will make spotting patterns even more natural and fun.`;
+            practice.push(`Making fun shape and color patterns with household objects.`);
+          }
+          break;
 
-      case "odd-one-out":
-        summary = `${child.childName} tackled Odd One Out (${g.domain}), completing ${done}/3 levels${acc !== null ? ` with ${acc}% average accuracy` : ""}${rtText}. This task evaluated visual feature acuity, categorization, and the discernment of invariant characteristics such as shape, size, fill, and orientation anomalies. `;
-        if (acc !== null && acc >= 85) {
-          summary += `Displayed keen visual discrimination across all levels (Level 1: ${l1 ?? acc}%, Level 2: ${l2 ?? acc}%), spotting subtle anomalous features quickly and reliably without hesitation.`;
-          strengths.push(`Exceptional visual feature discrimination (${acc}% accuracy).`);
-        } else if (acc !== null && acc >= 60) {
-          summary += `Identified obvious feature contrasts readily, showing thoughtful comparison when analyzing sets with multi-attribute distractors across intermediate levels.`;
-          strengths.push(`Careful visual feature comparison across diverse object sets.`);
-          practice.push(`Picture-comparison and spot-the-difference activities at home.`);
-        } else {
-          summary += `Engaged actively with visual comparison sets, demonstrating good patience while scanning diverse object arrays for subtle differences.`;
-          practice.push(`Playful 'spot the odd item' games using household objects.`);
-        }
-        break;
+        case "odd-one-out":
+          summary = `${child.childName} played Odd One Out (${g.domain}), completing ${done}/3 levels${acc !== null ? ` with ${acc}% average accuracy` : ""}${rtText}. This challenge looked at how closely ${child.childName} inspects pictures to spot subtle differences and pick the object that doesn't belong. `;
+          if (acc !== null && acc >= 85) {
+            summary += `Demonstrated keen observation across all levels (Level 1: ${l1 ?? acc}%, Level 2: ${l2 ?? acc}%), quickly finding the difference without second-guessing.`;
+            strengths.push(`Sharp eye for detail and spotting differences quickly (${acc}% accuracy).`);
+          } else if (acc !== null && acc >= 60) {
+            summary += `Spotted obvious differences right away, taking time to carefully compare items when multiple cards looked similar.`;
+            strengths.push(`Careful visual comparison when inspecting similar objects.`);
+            practice.push(`Spot-the-difference picture puzzles in books or magazines.`);
+          } else {
+            summary += `Carefully inspected each group of objects, showing good patience while searching for what made one card unique.`;
+            practice.push(`Playful 'which one doesn't belong' games with toys or fruit at snack time.`);
+          }
+          break;
 
-      case "rule-discovery":
-        summary = `${child.childName} worked through Rule Discovery (${g.domain}), completing ${done}/3 levels${acc !== null ? ` with ${acc}% average accuracy` : ""}${rtText}. The game evaluated hypothesis testing, inductive reasoning, and cognitive flexibility as underlying sorting criteria shifted dynamically between color, shape, and count. `;
-        if (acc !== null && acc >= 85) {
-          summary += `Adapted seamlessly to shifting categorization rules (Level 1: ${l1 ?? acc}%, Level 2: ${l2 ?? acc}%), demonstrating agile hypothesis testing and immediate cognitive flexibility when feedback indicated a rule change.`;
-          strengths.push(`Rapid cognitive adaptation and rule switching (${acc}% accuracy).`);
-        } else if (acc !== null && acc >= 60) {
-          summary += `Discovered initial sorting rules with confidence, demonstrating steady adjustments when sorting parameters transitioned across consecutive trial blocks.`;
-          strengths.push(`Steady hypothesis testing and constructive response to corrective feedback.`);
-          practice.push(`Multi-criteria sorting games with surprise rule switches at home.`);
-        } else {
-          summary += `Showed active willingness to test different categorization ideas across changing trial blocks. Playful sorting games with shifting rules will further enhance cognitive flexibility.`;
-          practice.push(`Low-pressure everyday classification and sorting games.`);
-        }
-        break;
+        case "rule-discovery":
+          summary = `${child.childName} played Rule Discovery (${g.domain}), completing ${done}/3 levels${acc !== null ? ` with ${acc}% average accuracy` : ""}${rtText}. This game looked at how ${child.childName} tries out new ideas and adapts when the sorting rule changes between color, shape, and count. `;
+          if (acc !== null && acc >= 85) {
+            summary += `Adapted smoothly whenever the secret sorting rule switched (Level 1: ${l1 ?? acc}%, Level 2: ${l2 ?? acc}%), testing new ideas right away and learning from the hints.`;
+            strengths.push(`Adapts quickly and tests new ideas when rules change (${acc}% accuracy).`);
+          } else if (acc !== null && acc >= 60) {
+            summary += `Figured out the starting sorting rules with confidence, adjusting their choices nicely as the game introduced new rules.`;
+            strengths.push(`Thoughtful approach to testing new sorting rules.`);
+            practice.push(`Sorting toys or socks by color, then switching to sorting by size.`);
+          } else {
+            summary += `Showed great willingness to try different ideas across the rounds. Fun sorting games with changing rules will help them feel confident whenever things switch.`;
+            practice.push(`Fun sorting games with surprise rule changes during family cleanup time.`);
+          }
+          break;
 
-      case "story-sequencing":
-        summary = `${child.childName} explored Story Sequencing (${g.domain}), completing ${done}/3 levels${acc !== null ? ` with ${acc}% average accuracy` : ""}${rtText}. This activity measured narrative comprehension, temporal logic, and the reconstruction of chronological beginning-middle-end event timelines. `;
-        if (acc !== null && acc >= 85) {
-          summary += `Reconstructed narrative timelines with outstanding clarity (Level 1: ${l1 ?? acc}%, Level 2: ${l2 ?? acc}%), demonstrating mature causal reasoning and strong story-structure comprehension.`;
-          strengths.push(`Precise narrative timeline reconstruction (${acc}% accuracy).`);
-        } else if (acc !== null && acc >= 60) {
-          summary += `Ordered standard cause-and-effect narrative scenes effectively, demonstrating good contextual understanding when assembling chronological sequences.`;
-          strengths.push(`Solid cause-and-effect reasoning on multi-step narrative cards.`);
-          practice.push(`Bedtime story retelling and sequential picture card arrangement.`);
-        } else {
-          summary += `Participated enthusiastically in story ordering, showing thoughtful engagement with illustrated narrative scenes.`;
-          practice.push(`Interactive storytelling and sequential picture card games.`);
-        }
-        break;
+        case "story-sequencing":
+          summary = `${child.childName} played Story Sequencing (${g.domain}), completing ${done}/3 levels${acc !== null ? ` with ${acc}% average accuracy` : ""}${rtText}. This activity looked at how well ${child.childName} puts story events in order from beginning to middle to end. `;
+          if (acc !== null && acc >= 85) {
+            summary += `Arranged the adventure cards in clear, logical order (Level 1: ${l1 ?? acc}%, Level 2: ${l2 ?? acc}%), showing a wonderful grasp of cause and effect in stories.`;
+            strengths.push(`Clear understanding of story order and what happens next (${acc}% accuracy).`);
+          } else if (acc !== null && acc >= 60) {
+            summary += `Ordered standard cause-and-effect scenes nicely, showing good comprehension as story scenes became longer.`;
+            strengths.push(`Good understanding of beginning, middle, and end in stories.`);
+            practice.push(`Talking about 'what happened first, next, and last' after reading bedtime books.`);
+          } else {
+            summary += `Enjoyed exploring the story cards and thinking about the characters. Retelling daily adventures together will strengthen sequencing in a fun, natural way.`;
+            practice.push(`Retelling daily routines or favorite fairy tales step by step.`);
+          }
+          break;
 
-      default:
-        summary = `${child.childName} completed ${done}/3 levels in ${g.gameName} (${g.domain})${acc !== null ? ` with ${acc}% average accuracy` : ""}, demonstrating positive engagement throughout the activity.`;
+        default:
+          summary = `${child.childName} completed ${done}/3 levels in ${g.gameName} (${g.domain})${acc !== null ? ` with ${acc}% average accuracy` : ""}, demonstrating positive engagement throughout the activity.`;
+      }
     }
 
     return {
       gameKey: g.gameKey,
       gameName: g.gameName,
       cognitiveDomain: g.domain,
+      gameStatus: g.gameStatus,
       levelsCompleted: done,
       averageAccuracy: acc,
       averageReactionTimeMs: rt,
@@ -713,32 +771,35 @@ export function generateRuleBasedReport(
     };
   });
 
-  // 2. LEVEL-WISE PERFORMANCE (All 18 levels with nuanced data-grounded insights)
+  // 2. LEVEL-WISE PERFORMANCE (All 18 levels with data-grounded insights)
   const levelWisePerformance: AiStructuredReport["levelWisePerformance"] = [];
   for (const g of analyzedGames) {
     for (let lvl = 1; lvl <= 3; lvl++) {
       const att = g.levels.find((l) => l.levelNumber === lvl);
-      const acc = att?.accuracy ?? null;
+      const isLevelSkipped = att?.status === "SKIPPED" || g.gameStatus === "SKIPPED";
+      const acc = isLevelSkipped ? null : (att?.accuracy ?? null);
       const duration = att?.durationMs ?? null;
-      const rt = att?.averageReactionTimeMs ?? null;
-      const status = att?.status || (acc !== null ? "COMPLETED" : "NOT_COMPLETED");
+      const rt = isLevelSkipped ? null : (att?.averageReactionTimeMs ?? null);
+      const status = isLevelSkipped ? "SKIPPED" : att?.status || (acc !== null ? "COMPLETED" : "NOT_COMPLETED");
 
       let insight = `${g.gameName} Level ${lvl}`;
-      if (status === "COMPLETED" && acc !== null) {
-        const paceStr = rt ? ` at ${(rt / 1000).toFixed(1)}s pace` : "";
+      if (status === "SKIPPED") {
+        insight = `This activity level was skipped during the session; completely normal when a child feels tired.`;
+      } else if (status === "COMPLETED" && acc !== null) {
+        const paceStr = rt ? ` with a steady pace of ${(rt / 1000).toFixed(1)}s per trial` : "";
         if (acc >= 90) {
-          insight = `Exemplary performance with ${acc}% accuracy${paceStr}, demonstrating mastery of foundational level mechanics.`;
+          insight = `Great work with ${acc}% accuracy${paceStr}, showing strong confidence with this challenge.`;
         } else if (acc >= 70) {
-          insight = `Solid execution with ${acc}% accuracy${paceStr}, navigating level constraints with focused concentration.`;
+          insight = `Good focus with ${acc}% accuracy${paceStr}, showing solid effort throughout the level.`;
         } else if (acc >= 50) {
-          insight = `Achieved ${acc}% accuracy${paceStr}, demonstrating thoughtful engagement as level difficulty graduated.`;
+          insight = `Completed with ${acc}% accuracy${paceStr}, taking time to think through the puzzles.`;
         } else {
-          insight = `Completed level exploration with ${acc}% accuracy, displaying persistence through challenging trial conditions.`;
+          insight = `Completed level exploration with ${acc}% accuracy, persisting through tricky conditions.`;
         }
       } else if (status === "COMPLETED") {
-        insight = `Level completed successfully with positive engagement and continuous exploration.`;
+        insight = `Level completed successfully with positive engagement and curious exploration.`;
       } else {
-        insight = `Level progression not recorded in this session; available for future playful exploration.`;
+        insight = `Level not played during this session; ready for future fun exploration.`;
       }
 
       levelWisePerformance.push({
@@ -754,7 +815,9 @@ export function generateRuleBasedReport(
   }
 
   // 3. RANK GAMES FOR EVIDENCE-BASED STRENGTHS & GROWTH AREAS
-  const scoredGames = analyzedGames.filter((g) => g.averageAccuracy !== null);
+  const scoredGames = analyzedGames.filter(
+    (g) => g.averageAccuracy !== null && g.gameStatus !== "SKIPPED"
+  );
   const sortedByAcc = [...scoredGames].sort(
     (a, b) => (b.averageAccuracy ?? 0) - (a.averageAccuracy ?? 0)
   );

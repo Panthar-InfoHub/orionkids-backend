@@ -10,6 +10,7 @@ import {
   submitWarmUpController,
   startLevelController,
   completeLevelController,
+  skipQuestController,
   getReportController,
   generateReportController,
   downloadReportPdfController,
@@ -66,6 +67,13 @@ router.post(
     "/quest/sessions/:sessionId/levels/complete",
   ],
   asyncHandler(completeLevelController)
+);
+router.post(
+  [
+    "/sessions/:sessionId/skip",
+    "/quest/sessions/:sessionId/skip",
+  ],
+  asyncHandler(skipQuestController)
 );
 
 // 4. Report Retrieval & Generation

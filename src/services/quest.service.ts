@@ -17,6 +17,7 @@ import {
 import type {
   GameKey,
   CompleteLevelInput,
+  SkipQuestInput,
 } from "../validators/quest.schema.js";
 import { GAME_KEY_TO_ID, GAME_ID_TO_KEY } from "../validators/quest.schema.js";
 import {
@@ -42,7 +43,7 @@ export function computeSessionProgression(
 ) {
   const completedIndices = new Set<number>();
   for (const a of completedAttempts) {
-    if (!a.status || a.status === "COMPLETED") {
+    if (!a.status || a.status === "COMPLETED" || a.status === "SKIPPED") {
       const gId = GAME_KEY_TO_ID[a.gameKey as GameKey];
       if (gId) {
         completedIndices.add((gId - 1) * 3 + a.levelNumber);
@@ -136,11 +137,12 @@ export async function getOrCreateActiveSession(
       childProfile: true,
       warmUpSubmission: true,
       levelAttempts: {
-        where: { status: "COMPLETED" },
+        where: { status: { in: ["COMPLETED", "SKIPPED"] } },
         select: {
           id: true,
           gameKey: true,
           levelNumber: true,
+          status: true,
           accuracy: true,
           durationMs: true,
           averageReactionTimeMs: true,
@@ -166,11 +168,12 @@ export async function getOrCreateActiveSession(
           childProfile: true,
           warmUpSubmission: true,
           levelAttempts: {
-            where: { status: "COMPLETED" },
+            where: { status: { in: ["COMPLETED", "SKIPPED"] } },
             select: {
               id: true,
               gameKey: true,
               levelNumber: true,
+              status: true,
               accuracy: true,
               durationMs: true,
               averageReactionTimeMs: true,
@@ -191,11 +194,12 @@ export async function getOrCreateActiveSession(
             childProfile: true,
             warmUpSubmission: true,
             levelAttempts: {
-              where: { status: "COMPLETED" },
+              where: { status: { in: ["COMPLETED", "SKIPPED"] } },
               select: {
                 id: true,
                 gameKey: true,
                 levelNumber: true,
+                status: true,
                 accuracy: true,
                 durationMs: true,
                 averageReactionTimeMs: true,
@@ -226,11 +230,12 @@ export async function getOrCreateActiveSession(
         childProfile: true,
         warmUpSubmission: true,
         levelAttempts: {
-          where: { status: "COMPLETED" },
+          where: { status: { in: ["COMPLETED", "SKIPPED"] } },
           select: {
             id: true,
             gameKey: true,
             levelNumber: true,
+            status: true,
             accuracy: true,
             durationMs: true,
             averageReactionTimeMs: true,
@@ -282,11 +287,12 @@ export async function getCurrentSession(
       childProfile: true,
       warmUpSubmission: true,
       levelAttempts: {
-        where: { status: "COMPLETED" },
+        where: { status: { in: ["COMPLETED", "SKIPPED"] } },
         select: {
           id: true,
           gameKey: true,
           levelNumber: true,
+          status: true,
           accuracy: true,
           durationMs: true,
           averageReactionTimeMs: true,
@@ -316,11 +322,12 @@ export async function getCurrentSession(
           childProfile: true,
           warmUpSubmission: true,
           levelAttempts: {
-            where: { status: "COMPLETED" },
+            where: { status: { in: ["COMPLETED", "SKIPPED"] } },
             select: {
               id: true,
               gameKey: true,
               levelNumber: true,
+              status: true,
               accuracy: true,
               durationMs: true,
               averageReactionTimeMs: true,
@@ -349,11 +356,12 @@ export async function getCurrentSession(
         },
       },
       levelAttempts: {
-        where: { status: "COMPLETED" },
+        where: { status: { in: ["COMPLETED", "SKIPPED"] } },
         select: {
           id: true,
           gameKey: true,
           levelNumber: true,
+          status: true,
           accuracy: true,
           durationMs: true,
           averageReactionTimeMs: true,
@@ -378,11 +386,12 @@ export async function getSessionById(userId: string, sessionId: string) {
       childProfile: true,
       warmUpSubmission: true,
       levelAttempts: {
-        where: { status: "COMPLETED" },
+        where: { status: { in: ["COMPLETED", "SKIPPED"] } },
         select: {
           id: true,
           gameKey: true,
           levelNumber: true,
+          status: true,
           accuracy: true,
           durationMs: true,
           averageReactionTimeMs: true,
@@ -432,7 +441,7 @@ export async function saveWarmUpSubmission(
     include: {
       warmUpSubmission: true,
       levelAttempts: {
-        where: { status: "COMPLETED" },
+        where: { status: { in: ["COMPLETED", "SKIPPED"] } },
         select: { id: true },
       },
     },
@@ -795,11 +804,283 @@ export async function startLevelAttempt(
   return result;
 }
 
+export async function skipLevelOrGame(
+  userId: string,
+  sessionId: string,
+  input: SkipQuestInput
+) {
+  const result = await prisma.$transaction(async (tx) => {
+    const session = await tx.questSession.findUnique({
+      where: { id: sessionId },
+      include: {
+        warmUpSubmission: { select: { id: true } },
+        levelAttempts: {
+          where: { status: { in: ["COMPLETED", "SKIPPED"] } },
+          select: { id: true, gameKey: true, levelNumber: true, status: true },
+        },
+      },
+    });
+
+    if (!session) {
+      throw new NotFoundError("Quest session not found");
+    }
+
+    if (session.userId !== userId) {
+      throw new ForbiddenError("You do not own this quest session");
+    }
+
+    if (session.status !== "IN_PROGRESS") {
+      throw new ValidationError("Quest session is closed");
+    }
+
+    const requestedGameId = GAME_KEY_TO_ID[input.gameKey];
+    if (!requestedGameId) {
+      throw new ValidationError(`Unknown game key: ${input.gameKey}`);
+    }
+
+    const targetLevel = input.levelNumber || session.currentLevel;
+    const now = new Date();
+    const reason = input.reason || "skipped_by_child";
+
+    if (input.skipEntireGame) {
+      // Record SKIPPED for all levels of this game that are not yet completed
+      for (let lvl = 1; lvl <= 3; lvl++) {
+        const isAlreadyHandled = session.levelAttempts.some(
+          (a) =>
+            a.gameKey === input.gameKey &&
+            a.levelNumber === lvl &&
+            (a.status === "COMPLETED" || a.status === "SKIPPED")
+        );
+        if (isAlreadyHandled) continue;
+
+        const existingAttempt = await tx.levelAttempt.findFirst({
+          where: {
+            questSessionId: sessionId,
+            gameKey: input.gameKey,
+            levelNumber: lvl,
+          },
+          orderBy: { attemptNumber: "desc" },
+        });
+
+        if (existingAttempt) {
+          if (existingAttempt.status === "COMPLETED" || existingAttempt.status === "SKIPPED") {
+            continue;
+          }
+          await tx.levelAttempt.update({
+            where: { id: existingAttempt.id },
+            data: {
+              status: "SKIPPED",
+              accuracy: null,
+              durationMs: lvl === targetLevel ? (input.durationMs || null) : null,
+              averageReactionTimeMs: null,
+              totalTrials: null,
+              correctTrials: null,
+              completedAt: now,
+              metrics: {
+                isSkipped: true,
+                skippedAt: now.toISOString(),
+                reason,
+                skipEntireGame: true,
+              },
+            },
+          });
+        } else {
+          await tx.levelAttempt.create({
+            data: {
+              questSessionId: sessionId,
+              userId,
+              gameId: requestedGameId,
+              gameKey: input.gameKey,
+              levelNumber: lvl,
+              attemptNumber: 1,
+              status: "SKIPPED",
+              accuracy: null,
+              durationMs: lvl === targetLevel ? (input.durationMs || null) : null,
+              averageReactionTimeMs: null,
+              totalTrials: null,
+              correctTrials: null,
+              startedAt: now,
+              completedAt: now,
+              metrics: {
+                isSkipped: true,
+                skippedAt: now.toISOString(),
+                reason,
+                skipEntireGame: true,
+              },
+            },
+          });
+        }
+      }
+
+      // Progression advances to next game Level 1 (or COMPLETED if Game 6)
+      const nextGame = requestedGameId + 1;
+      const isQuestComplete = nextGame > TOTAL_GAMES;
+      const nextGameKey = isQuestComplete ? null : GAME_ID_TO_KEY[nextGame];
+      const nextStage = isQuestComplete
+        ? "COMPLETED"
+        : `GAME_${nextGame}_LEVEL_1`;
+
+      await tx.questSession.update({
+        where: { id: sessionId },
+        data: {
+          currentGame: isQuestComplete ? TOTAL_GAMES : nextGame,
+          currentLevel: 1,
+          currentStage: nextStage,
+          status: isQuestComplete ? "COMPLETED" : "IN_PROGRESS",
+          completedAt: isQuestComplete ? now : null,
+          lastActivityAt: now,
+        },
+      });
+
+      const nextLevelRoute = isQuestComplete
+        ? `/report?sessionId=${encodeURIComponent(sessionId)}`
+        : `/games/${nextGameKey}?level=1&sessionId=${encodeURIComponent(sessionId)}`;
+
+      logger.info(
+        {
+          sessionId,
+          gameKey: input.gameKey,
+          skipEntireGame: true,
+          nextStage,
+          isQuestComplete,
+        },
+        "quest.game_skipped_by_child"
+      );
+
+      return {
+        success: true,
+        message: `Activity ${input.gameKey} skipped by child`,
+        sessionId,
+        nextStage,
+        currentGame: isQuestComplete ? TOTAL_GAMES : nextGame,
+        currentLevel: 1,
+        isQuestComplete,
+        nextLevelRoute,
+      };
+    } else {
+      // Skip single level
+      const existingAttempt = await tx.levelAttempt.findFirst({
+        where: {
+          questSessionId: sessionId,
+          gameKey: input.gameKey,
+          levelNumber: targetLevel,
+        },
+        orderBy: { attemptNumber: "desc" },
+      });
+
+      if (existingAttempt && existingAttempt.status === "IN_PROGRESS") {
+        await tx.levelAttempt.update({
+          where: { id: existingAttempt.id },
+          data: {
+            status: "SKIPPED",
+            accuracy: null,
+            durationMs: input.durationMs || null,
+            averageReactionTimeMs: null,
+            totalTrials: null,
+            correctTrials: null,
+            completedAt: now,
+            metrics: {
+              isSkipped: true,
+              skippedAt: now.toISOString(),
+              reason,
+            },
+          },
+        });
+      } else {
+        await tx.levelAttempt.create({
+          data: {
+            questSessionId: sessionId,
+            userId,
+            gameId: requestedGameId,
+            gameKey: input.gameKey,
+            levelNumber: targetLevel,
+            attemptNumber: existingAttempt ? existingAttempt.attemptNumber + 1 : 1,
+            status: "SKIPPED",
+            accuracy: null,
+            durationMs: input.durationMs || null,
+            averageReactionTimeMs: null,
+            totalTrials: null,
+            correctTrials: null,
+            startedAt: now,
+            completedAt: now,
+            metrics: {
+              isSkipped: true,
+              skippedAt: now.toISOString(),
+              reason,
+            },
+          },
+        });
+      }
+
+      // Calculate next stage
+      const currentIndex = (requestedGameId - 1) * 3 + targetLevel;
+      const nextIndex = currentIndex + 1;
+      const isQuestComplete = nextIndex > 18;
+      let nextGame = isQuestComplete ? 6 : Math.floor((nextIndex - 1) / 3) + 1;
+      let nextLevel = isQuestComplete ? 3 : ((nextIndex - 1) % 3) + 1;
+      let nextStage = isQuestComplete
+        ? "COMPLETED"
+        : `GAME_${nextGame}_LEVEL_${nextLevel}`;
+      const nextGameKey = GAME_ID_TO_KEY[nextGame];
+
+      await tx.questSession.update({
+        where: { id: sessionId },
+        data: {
+          currentGame: nextGame,
+          currentLevel: nextLevel,
+          currentStage: nextStage,
+          status: isQuestComplete ? "COMPLETED" : "IN_PROGRESS",
+          completedAt: isQuestComplete ? now : null,
+          lastActivityAt: now,
+        },
+      });
+
+      const nextLevelRoute = isQuestComplete
+        ? `/report?sessionId=${encodeURIComponent(sessionId)}`
+        : `/games/${nextGameKey}?level=${nextLevel}&sessionId=${encodeURIComponent(sessionId)}`;
+
+      logger.info(
+        {
+          sessionId,
+          gameKey: input.gameKey,
+          levelNumber: targetLevel,
+          nextStage,
+          isQuestComplete,
+        },
+        "quest.level_skipped_by_child"
+      );
+
+      return {
+        success: true,
+        message: `Level ${targetLevel} of ${input.gameKey} skipped by child`,
+        sessionId,
+        nextStage,
+        currentGame: nextGame,
+        currentLevel: nextLevel,
+        isQuestComplete,
+        nextLevelRoute,
+      };
+    }
+  });
+
+  return result;
+}
+
 export async function completeLevelAttempt(
   userId: string,
   sessionId: string,
   input: CompleteLevelInput
 ) {
+  if (input.isSkipped) {
+    return skipLevelOrGame(userId, sessionId, {
+      gameKey: input.gameKey,
+      levelNumber: input.levelNumber,
+      skipEntireGame: input.skipEntireGame ?? false,
+      reason: (input.metrics as any)?.reason || "skipped_by_child",
+      durationMs: input.durationMs,
+    });
+  }
+
   // Reject placeholder/synthetic completion
   if (input.totalTrials !== undefined && input.totalTrials <= 0) {
     throw new ValidationError(
@@ -829,8 +1110,8 @@ export async function completeLevelAttempt(
           currentLevel: true,
           warmUpSubmission: { select: { id: true } },
           levelAttempts: {
-            where: { status: "COMPLETED" },
-            select: { id: true, gameKey: true, levelNumber: true },
+            where: { status: { in: ["COMPLETED", "SKIPPED"] } },
+            select: { id: true, gameKey: true, levelNumber: true, status: true },
           },
         },
       });
@@ -1251,7 +1532,7 @@ export async function generateOrGetReport(
         select: { answers: true },
       },
       levelAttempts: {
-        where: { status: "COMPLETED" },
+        where: { status: { in: ["COMPLETED", "SKIPPED"] } },
         orderBy: [
           { gameId: "asc" },
           { levelNumber: "asc" },
@@ -1306,6 +1587,7 @@ export async function generateOrGetReport(
 
   // Exclude synthetic/autoAdvanced/zero-trial/skipped attempts from genuine completion metrics (Issue #11)
   const isGenuineAttempt = (a: (typeof session.levelAttempts)[number]) => {
+    if (a.status === "SKIPPED") return false;
     if (typeof a.totalTrials !== "number" || a.totalTrials <= 0) return false;
     if (typeof a.correctTrials !== "number" || a.correctTrials < 0)
       return false;
@@ -1370,6 +1652,15 @@ export async function generateOrGetReport(
   for (let g = 1; g <= 6; g++) {
     const key = GAME_ID_TO_KEY[g] as string;
     const gameAttempts = attempts.filter((a) => a.gameId === g);
+
+    // Count unique completed levels (1, 2, 3), max 3
+    const uniqueCompletedLevels = new Set(
+      gameAttempts
+        .filter((a) => a.levelNumber >= 1 && a.levelNumber <= 3)
+        .map((a) => a.levelNumber)
+    );
+    const levelsCompleted = Math.min(3, Math.max(0, uniqueCompletedLevels.size));
+
     const gameAccs = gameAttempts
       .map((a) => a.accuracy)
       .filter((v): v is number => typeof v === "number");
@@ -1378,20 +1669,52 @@ export async function generateOrGetReport(
         ? Math.round(gameAccs.reduce((a, b) => a + b, 0) / gameAccs.length)
         : null;
 
-    const rts = gameAttempts
-      .map((a) => a.averageReactionTimeMs)
-      .filter((v): v is number => typeof v === "number" && v > 0);
-    const avgRT =
-      rts.length > 0
-        ? Math.round(rts.reduce((a, b) => a + b, 0) / rts.length)
-        : null;
+    // Weighted average pace across all completed levels of that game
+    const validAttemptsWithRT = gameAttempts.filter(
+      (a) => typeof a.averageReactionTimeMs === "number" && a.averageReactionTimeMs > 0
+    );
+    let avgRT: number | null = null;
+    if (validAttemptsWithRT.length > 0) {
+      const totalWeight = validAttemptsWithRT.reduce(
+        (sum, a) => sum + (typeof a.totalTrials === "number" && a.totalTrials > 0 ? a.totalTrials : 1),
+        0
+      );
+      const weightedSum = validAttemptsWithRT.reduce(
+        (sum, a) =>
+          sum +
+          (a.averageReactionTimeMs! *
+            (typeof a.totalTrials === "number" && a.totalTrials > 0 ? a.totalTrials : 1)),
+        0
+      );
+      avgRT = totalWeight > 0 ? Math.round(weightedSum / totalWeight) : null;
+    }
+
+    // Determine game status
+    const allSessionAttemptsForGame = session.levelAttempts.filter((a) => a.gameId === g);
+    const hasSkippedAttempt = allSessionAttemptsForGame.some(
+      (a) =>
+        a.status === "SKIPPED" ||
+        Boolean((a.metrics as any)?.isSkipped || (a.metrics as any)?.skippedViaTiredPrompt)
+    );
+
+    let gameStatus: "COMPLETED" | "SKIPPED" | "IN_PROGRESS" | "NOT_ATTEMPTED";
+    if (levelsCompleted === 3) {
+      gameStatus = "COMPLETED";
+    } else if (hasSkippedAttempt || (session.status === "COMPLETED" && levelsCompleted < 3)) {
+      gameStatus = "SKIPPED";
+    } else if (levelsCompleted > 0) {
+      gameStatus = "IN_PROGRESS";
+    } else {
+      gameStatus = "NOT_ATTEMPTED";
+    }
 
     gameSummaries[key] = {
       gameId: g,
       gameKey: key,
-      levelsCompleted: gameAttempts.length,
-      averageAccuracy: avgGameAcc,
-      averageReactionTimeMs: avgRT,
+      gameStatus,
+      levelsCompleted,
+      averageAccuracy: gameStatus === "SKIPPED" ? null : avgGameAcc,
+      averageReactionTimeMs: gameStatus === "SKIPPED" ? null : avgRT,
     };
   }
 
@@ -1423,43 +1746,43 @@ export async function generateOrGetReport(
 
   const cognitiveFacets = {
     focusInhibition: {
-      name: "Focus & Interference Resistance",
-      score: gameSummaries["stroop"]?.averageAccuracy ?? null,
-      domain: "Selective attention & impulse control (Stroop colour-word task)",
+      name: "Staying Focused (Focus & Impulse Control)",
+      score: gameSummaries["stroop"]?.gameStatus === "SKIPPED" ? null : gameSummaries["stroop"]?.averageAccuracy ?? null,
+      domain: "Staying focused and ignoring distractions (Stroop colour-word task)",
     },
     workingMemory: {
-      name: "Visual Working Memory",
-      score: gameSummaries["card-flip"]?.averageAccuracy ?? null,
+      name: "Remembering Pictures (Visual Memory)",
+      score: gameSummaries["card-flip"]?.gameStatus === "SKIPPED" ? null : gameSummaries["card-flip"]?.averageAccuracy ?? null,
       domain:
-        "Short-term spatial recall & pair association (Card flip memory match)",
+        "Remembering pictures and where cards hide (Card flip memory match)",
     },
     patternReasoning: {
-      name: "Pattern Induction & Extrapolation",
-      score: gameSummaries["pattern"]?.averageAccuracy ?? null,
-      domain: "Rule abstraction & sequence prediction (Pattern recognition)",
+      name: "Finding Patterns (Pattern Recognition)",
+      score: gameSummaries["pattern"]?.gameStatus === "SKIPPED" ? null : gameSummaries["pattern"]?.averageAccuracy ?? null,
+      domain: "Spotting sequence rules and working out what comes next (Pattern recognition)",
     },
     visualDiscrimination: {
-      name: "Visual Feature Acuity",
-      score: gameSummaries["odd-one-out"]?.averageAccuracy ?? null,
-      domain: "Categorization & invariant feature analysis (Odd one out)",
+      name: "Spotting Differences (Visual Attention)",
+      score: gameSummaries["odd-one-out"]?.gameStatus === "SKIPPED" ? null : gameSummaries["odd-one-out"]?.averageAccuracy ?? null,
+      domain: "Looking closely and spotting differences between objects (Odd one out)",
     },
     conceptualFlexibility: {
-      name: "Hypothesis Testing & Flexibility",
-      score: gameSummaries["rule-discovery"]?.averageAccuracy ?? null,
-      domain: "Inductive reasoning & rule discovery under changing criteria",
+      name: "Trying New Rules (Mental Flexibility)",
+      score: gameSummaries["rule-discovery"]?.gameStatus === "SKIPPED" ? null : gameSummaries["rule-discovery"]?.averageAccuracy ?? null,
+      domain: "Trying new ideas and adapting when sorting rules shift (Rule discovery)",
     },
     temporalSequencing: {
-      name: "Temporal & Narrative Sequencing",
-      score: gameSummaries["story-sequencing"]?.averageAccuracy ?? null,
-      domain: "Logical timeline reconstruction & causal reasoning",
+      name: "Remembering Story Order (Story Sequencing)",
+      score: gameSummaries["story-sequencing"]?.gameStatus === "SKIPPED" ? null : gameSummaries["story-sequencing"]?.averageAccuracy ?? null,
+      domain: "Arranging story cards in clear beginning-middle-end order (Story sequencing)",
     },
   };
 
   // Prepare input for AI report generation
   const gamesPayload = CANONICAL_GAMES.map((cg) => {
-    const gameAttempts = attempts.filter((a) => a.gameId === cg.id);
     const summary = gameSummaries[cg.key] || {
       levelsCompleted: 0,
+      gameStatus: "NOT_ATTEMPTED",
       averageAccuracy: null,
       averageReactionTimeMs: null,
     };
@@ -1468,20 +1791,25 @@ export async function generateOrGetReport(
       gameKey: cg.key,
       gameName: cg.name,
       domain: cg.domain,
+      gameStatus: summary.gameStatus,
       levelsCompleted: summary.levelsCompleted,
       averageAccuracy: summary.averageAccuracy,
       averageReactionTimeMs: summary.averageReactionTimeMs,
       levels: [1, 2, 3].map((lvl) => {
-        const att = gameAttempts.find((a) => a.levelNumber === lvl);
+        const att = session.levelAttempts.find(
+          (a) => a.gameId === cg.id && a.levelNumber === lvl
+        );
+        const isLvlSkipped = att?.status === "SKIPPED" || (summary.gameStatus === "SKIPPED" && !att);
+        const lvlStatus = isLvlSkipped ? "SKIPPED" : att ? "COMPLETED" : "NOT_COMPLETED";
         return {
           levelNumber: lvl,
           attemptNumber: att?.attemptNumber || 1,
-          status: att ? "COMPLETED" : "NOT_COMPLETED",
-          totalTrials: att?.totalTrials ?? null,
-          correctTrials: att?.correctTrials ?? null,
-          accuracy: att?.accuracy ?? null,
+          status: lvlStatus,
+          totalTrials: isLvlSkipped ? null : (att?.totalTrials ?? null),
+          correctTrials: isLvlSkipped ? null : (att?.correctTrials ?? null),
+          accuracy: isLvlSkipped ? null : (att?.accuracy ?? null),
           durationMs: att?.durationMs ?? null,
-          averageReactionTimeMs: att?.averageReactionTimeMs ?? null,
+          averageReactionTimeMs: isLvlSkipped ? null : (att?.averageReactionTimeMs ?? null),
         };
       }),
     };

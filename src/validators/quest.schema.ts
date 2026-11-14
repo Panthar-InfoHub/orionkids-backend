@@ -61,19 +61,23 @@ export const completeLevelSchema = z
     gameKey: gameKeysEnum,
     levelNumber: z.number().int().min(1).max(3),
     attemptNumber: z.number().int().positive().optional().default(1),
+    isSkipped: z.boolean().optional().default(false),
+    skipEntireGame: z.boolean().optional().default(false),
     totalTrials: z
-      .number({ message: "totalTrials is required and must be positive" })
+      .number({ message: "totalTrials must be positive" })
       .int("totalTrials must be an integer")
       .positive("totalTrials must be greater than 0")
-      .max(100),
+      .max(100)
+      .optional(),
     correctTrials: z
       .number({ message: "correctTrials is required" })
       .int("correctTrials must be an integer")
       .nonnegative("correctTrials cannot be negative")
-      .max(100),
-    accuracy: z.number().min(0).max(100).finite().optional(),
+      .max(100)
+      .optional(),
+    accuracy: z.number().min(0).max(100).finite().nullable().optional(),
     durationMs: z.number().int().nonnegative().optional(),
-    averageReactionTimeMs: z.number().int().nonnegative().optional(),
+    averageReactionTimeMs: z.number().int().nonnegative().nullable().optional(),
     metrics: z.record(z.string(), z.any()).optional().default({}),
     trialRecords: z.array(z.any()).max(100).optional().default([]),
     completedAt: z
@@ -83,15 +87,30 @@ export const completeLevelSchema = z
       .default(() => new Date().toISOString()),
   })
   .refine(
-    (data) => data.correctTrials <= data.totalTrials,
+    (data) => {
+      if (data.isSkipped) return true;
+      if (typeof data.totalTrials !== "number" || data.totalTrials <= 0) return false;
+      if (typeof data.correctTrials !== "number" || data.correctTrials < 0) return false;
+      return data.correctTrials <= data.totalTrials;
+    },
     {
-      message: "correctTrials cannot exceed totalTrials",
+      message: "Level completion requires positive totalTrials and correctTrials <= totalTrials (unless skipped)",
       path: ["correctTrials"],
     }
   );
 
 export type CompleteLevelInput = z.input<typeof completeLevelSchema>;
 export type CompleteLevelOutput = z.infer<typeof completeLevelSchema>;
+
+export const skipQuestSchema = z.object({
+  gameKey: gameKeysEnum,
+  levelNumber: z.number().int().min(1).max(3).optional(),
+  skipEntireGame: z.boolean().optional().default(false),
+  reason: z.string().trim().max(256).optional().default("skipped_by_child"),
+  durationMs: z.number().int().nonnegative().optional(),
+});
+
+export type SkipQuestInput = z.infer<typeof skipQuestSchema>;
 
 export const legacyStroopSubmitSchema = z
   .object({

@@ -9,6 +9,7 @@ import {
   legacyStroopSubmitSchema,
   saveCheckpointSchema,
   createSessionSchema,
+  skipQuestSchema,
   GAME_ID_TO_KEY,
 } from "../validators/quest.schema.js";
 import {
@@ -18,6 +19,7 @@ import {
   saveWarmUpSubmission,
   startLevelAttempt,
   completeLevelAttempt,
+  skipLevelOrGame,
   generateOrGetReport,
   getReportPdfBuffer,
   getResumeState,
@@ -138,6 +140,16 @@ export async function completeLevelController(req: Request, res: Response) {
     { ...result, nextLevelRoute },
     "Level attempt completed successfully"
   );
+}
+
+export async function skipQuestController(req: Request, res: Response) {
+  const userId = getUserId(req);
+  const sessionId = getParamString(req.params.sessionId, "sessionId");
+  const validated = skipQuestSchema.parse(req.body);
+
+  const result = await skipLevelOrGame(userId, sessionId, validated);
+
+  sendSuccess(res, 200, result, result.message);
 }
 
 export async function getReportController(req: Request, res: Response) {

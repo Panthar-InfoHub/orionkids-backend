@@ -17,7 +17,7 @@ export const CANONICAL_GAMES: readonly CanonicalGameDefinition[] = [
     gameKey: "stroop",
     name: "Stroop Colour-Word",
     title: "Stroop Colour-Word",
-    domain: "Focus & Interference Resistance",
+    domain: "Staying Focused (Focus & Impulse Control)",
     totalLevels: 3,
   },
   {
@@ -27,7 +27,7 @@ export const CANONICAL_GAMES: readonly CanonicalGameDefinition[] = [
     gameKey: "card-flip",
     name: "Card Flip Memory",
     title: "Card Flip Memory",
-    domain: "Visual Working Memory",
+    domain: "Remembering Pictures (Visual Memory)",
     totalLevels: 3,
   },
   {
@@ -37,7 +37,7 @@ export const CANONICAL_GAMES: readonly CanonicalGameDefinition[] = [
     gameKey: "pattern",
     name: "Pattern Recognition",
     title: "Pattern Recognition",
-    domain: "Pattern Induction & Extrapolation",
+    domain: "Finding Patterns (Pattern Recognition)",
     totalLevels: 3,
   },
   {
@@ -47,7 +47,7 @@ export const CANONICAL_GAMES: readonly CanonicalGameDefinition[] = [
     gameKey: "odd-one-out",
     name: "Odd One Out",
     title: "Odd One Out",
-    domain: "Visual Feature Acuity",
+    domain: "Spotting Differences (Visual Attention)",
     totalLevels: 3,
   },
   {
@@ -57,7 +57,7 @@ export const CANONICAL_GAMES: readonly CanonicalGameDefinition[] = [
     gameKey: "rule-discovery",
     name: "Rule Discovery",
     title: "Rule Discovery",
-    domain: "Hypothesis Testing & Flexibility",
+    domain: "Trying New Rules (Mental Flexibility)",
     totalLevels: 3,
   },
   {
@@ -67,7 +67,7 @@ export const CANONICAL_GAMES: readonly CanonicalGameDefinition[] = [
     gameKey: "story-sequencing",
     name: "Story Sequencing",
     title: "Story Sequencing",
-    domain: "Temporal & Narrative Sequencing",
+    domain: "Remembering Story Order (Story Sequencing)",
     totalLevels: 3,
   },
 ] as const;
