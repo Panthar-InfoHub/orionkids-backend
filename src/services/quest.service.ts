@@ -1,4 +1,4 @@
-import { prisma, type Prisma } from "../lib/prisma.js";
+import { prisma, withTransactionRetry, type Prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import {
   ForbiddenError,
@@ -476,7 +476,7 @@ export async function saveWarmUpSubmission(
 
   const validAnswers = answers || {};
 
-  const result = await prisma.$transaction(async (tx) => {
+  const result = await withTransactionRetry(async (tx) => {
     const submission = await tx.warmUpSubmission.upsert({
       where: { questSessionId: targetSessionId! },
       create: {
@@ -543,7 +543,7 @@ export async function startLevelAttempt(
   const idempotencyKey = options?.idempotencyKey?.trim() || null;
   const isReplay = Boolean(options?.isReplay);
 
-  const result = await prisma.$transaction(async (tx) => {
+  const result = await withTransactionRetry(async (tx) => {
     // 1. Concurrency lock: serialize concurrent level-start operations on the same quest session
     await tx.$queryRaw`SELECT id FROM quest_session WHERE id = ${sessionId} FOR UPDATE`;
 
@@ -809,7 +809,7 @@ export async function skipLevelOrGame(
   sessionId: string,
   input: SkipQuestInput
 ) {
-  const result = await prisma.$transaction(async (tx) => {
+  const result = await withTransactionRetry(async (tx) => {
     const session = await tx.questSession.findUnique({
       where: { id: sessionId },
       include: {
@@ -1097,7 +1097,7 @@ export async function completeLevelAttempt(
     );
   }
 
-  const result = await prisma.$transaction(
+  const result = await withTransactionRetry(
     async (tx) => {
       const currentSession = await tx.questSession.findUnique({
         where: { id: sessionId },
@@ -1700,10 +1700,12 @@ export async function generateOrGetReport(
     let gameStatus: "COMPLETED" | "SKIPPED" | "IN_PROGRESS" | "NOT_ATTEMPTED";
     if (levelsCompleted === 3) {
       gameStatus = "COMPLETED";
-    } else if (hasSkippedAttempt || (session.status === "COMPLETED" && levelsCompleted < 3)) {
+    } else if (hasSkippedAttempt) {
+      gameStatus = "SKIPPED";
+    } else if (session.status === "COMPLETED" && levelsCompleted === 0) {
       gameStatus = "SKIPPED";
     } else if (levelsCompleted > 0) {
-      gameStatus = "IN_PROGRESS";
+      gameStatus = session.status === "COMPLETED" ? "COMPLETED" : "IN_PROGRESS";
     } else {
       gameStatus = "NOT_ATTEMPTED";
     }
@@ -1713,8 +1715,8 @@ export async function generateOrGetReport(
       gameKey: key,
       gameStatus,
       levelsCompleted,
-      averageAccuracy: gameStatus === "SKIPPED" ? null : avgGameAcc,
-      averageReactionTimeMs: gameStatus === "SKIPPED" ? null : avgRT,
+      averageAccuracy: hasSkippedAttempt && levelsCompleted === 0 ? null : avgGameAcc,
+      averageReactionTimeMs: hasSkippedAttempt && levelsCompleted === 0 ? null : avgRT,
     };
   }
 
@@ -2175,7 +2177,7 @@ export async function saveAttemptCheckpoint(
   attemptId: string,
   checkpoint: Record<string, any>
 ) {
-  const result = await prisma.$transaction(async (tx) => {
+  const result = await withTransactionRetry(async (tx) => {
     const session = await tx.questSession.findUnique({
       where: { id: sessionId },
     });
@@ -2187,6 +2189,9 @@ export async function saveAttemptCheckpoint(
     if (session.userId !== userId) {
       throw new ForbiddenError("You do not own this quest session");
     }
+
+    const now = new Date();
+    const nowIso = now.toISOString();
 
     if (session.status !== "IN_PROGRESS") {
       throw new ConflictError(
@@ -2213,10 +2218,14 @@ export async function saveAttemptCheckpoint(
       );
     }
 
-    const now = new Date();
-    const nowIso = now.toISOString();
-    const currentMetrics = (attempt.metrics as Record<string, any>) || {};
+    // 1. Maintain consistent global lock order: lock/update QuestSession FIRST
+    await tx.questSession.update({
+      where: { id: sessionId },
+      data: { lastActivityAt: now },
+    });
 
+    // 2. Lock/update LevelAttempt SECOND
+    const currentMetrics = (attempt.metrics as Record<string, any>) || {};
     const updatedAttempt = await tx.levelAttempt.update({
       where: { id: attemptId },
       data: {
@@ -2226,11 +2235,6 @@ export async function saveAttemptCheckpoint(
           checkpointSavedAt: nowIso,
         },
       },
-    });
-
-    await tx.questSession.update({
-      where: { id: sessionId },
-      data: { lastActivityAt: now },
     });
 
     return {

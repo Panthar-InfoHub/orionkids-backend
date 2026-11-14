@@ -69,6 +69,67 @@ export const prisma = new PrismaClient({
   log: isDev ? ["warn", "error"] : ["error"],
 });
 
+/**
+ * Detects transient PostgreSQL / Neon concurrency conflicts, deadlocks, and serialization failures.
+ * Prisma code P2034: Transaction failed due to a write conflict or a deadlock.
+ */
+export function isTransactionConflictError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const anyErr = error as any;
+  if (anyErr.code === "P2034") return true;
+  const message = String(anyErr.message || "").toLowerCase();
+  return (
+    message.includes("write conflict") ||
+    message.includes("deadlock") ||
+    message.includes("please retry your transaction") ||
+    message.includes("could not serialize access") ||
+    message.includes("concurrent update") ||
+    message.includes("lock timeout")
+  );
+}
+
+/**
+ * Executes an interactive Prisma transaction with automatic jittered exponential backoff
+ * when transient concurrency write conflicts or deadlocks are detected.
+ */
+export async function withTransactionRetry<T>(
+  action: (tx: Prisma.TransactionClient) => Promise<T>,
+  options?: {
+    maxRetries?: number;
+    baseDelayMs?: number;
+    maxWait?: number;
+    timeout?: number;
+    isolationLevel?: Prisma.TransactionIsolationLevel;
+  }
+): Promise<T> {
+  const maxRetries = options?.maxRetries ?? 3;
+  const baseDelayMs = options?.baseDelayMs ?? 60;
+  let attempt = 0;
+
+  while (true) {
+    try {
+      return await prisma.$transaction(action, {
+        maxWait: options?.maxWait ?? 15000,
+        timeout: options?.timeout ?? 25000,
+        isolationLevel: options?.isolationLevel,
+      });
+    } catch (error) {
+      attempt++;
+      if (attempt <= maxRetries && isTransactionConflictError(error)) {
+        const jitter = Math.floor(Math.random() * 50);
+        const delay = baseDelayMs * Math.pow(2, attempt - 1) + jitter;
+        logger.warn(
+          { attempt, maxRetries, delay, message: (error as any)?.message },
+          "Database transaction conflict or deadlock detected; retrying with backoff"
+        );
+        await new Promise((res) => setTimeout(res, delay));
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
 export async function disconnectPrisma(): Promise<void> {
   try {
     await prisma.$disconnect();

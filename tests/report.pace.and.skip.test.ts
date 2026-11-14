@@ -265,10 +265,10 @@ describe("OrionKids Production Report Generation & Optimization Suite", () => {
       });
 
       assert.equal(attempts.length, 2);
-      assert.equal(attempts[0].status, "COMPLETED");
-      assert.equal(attempts[0].accuracy, 100);
-      assert.equal(attempts[1].status, "SKIPPED");
-      assert.equal(attempts[1].accuracy, null);
+      assert.equal(attempts[0]?.status, "COMPLETED");
+      assert.equal(attempts[0]?.accuracy, 100);
+      assert.equal(attempts[1]?.status, "SKIPPED");
+      assert.equal(attempts[1]?.accuracy, null);
 
       // Verify progression allows moving to level 3
       const session = await prisma.questSession.findUnique({
