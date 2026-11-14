@@ -17,8 +17,8 @@ import {
 
 const router = Router();
 
-// All child routes require an authenticated user
-router.use(requireAuth);
+// All child and report routes require an active, approved, non-restricted account
+router.use(requireActive);
 
 router.get("/reports/all", asyncHandler(listAllParentReportsController));
 router.post("/", requireActive, asyncHandler(createChildController));

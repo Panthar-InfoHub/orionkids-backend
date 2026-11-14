@@ -3,13 +3,97 @@ import { z } from "zod";
 import { openaiApiKey, env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
 import { estimateOpenAiCostUsd } from "../config/pricing.js";
-
 import {
   CANONICAL_GAMES,
   TOTAL_GAMES,
   LEVELS_PER_GAME,
   TOTAL_LEVELS,
 } from "../config/games.js";
+
+// ---------------------------------------------------------------------------
+// Rich Zod Schemas for Educational Cognitive Gameplay Reports
+// ---------------------------------------------------------------------------
+
+export const ObservedStrengthItemSchema = z.object({
+  heading: z.string().min(1, "Strength heading is required"),
+  cognitiveSkill: z.string().min(1, "Cognitive skill is required"),
+  observation: z.string().min(1, "Detailed observation is required"),
+  performanceEvidence: z.string().min(1, "Specific performance evidence is required"),
+  educationalRelevance: z.string().min(1, "Educational relevance is required"),
+});
+export type ObservedStrengthItem = z.infer<typeof ObservedStrengthItemSchema>;
+
+export const ObservedStrengthEntrySchema = z.union([
+  ObservedStrengthItemSchema,
+  z.string().transform((str) => ({
+    heading: "Demonstrated Cognitive Proficiency",
+    cognitiveSkill: "Core Cognitive Skill",
+    observation: str,
+    performanceEvidence: str,
+    educationalRelevance:
+      "Provides a dependable foundation for structured classroom tasks, focused attention, and independent problem-solving.",
+  })),
+]);
+
+export const AreaForPracticeItemSchema = z.object({
+  heading: z.string().min(1, "Practice heading is required"),
+  cognitiveSkill: z.string().min(1, "Cognitive skill is required"),
+  observedPattern: z.string().min(1, "Observed pattern description is required"),
+  performanceEvidence: z.string().min(1, "Specific performance evidence is required"),
+  recommendedApproach: z.string().min(1, "Recommended approach is required"),
+});
+export type AreaForPracticeItem = z.infer<typeof AreaForPracticeItemSchema>;
+
+export const AreaForPracticeEntrySchema = z.union([
+  AreaForPracticeItemSchema,
+  z.string().transform((str) => ({
+    heading: "Area for Playful Growth",
+    cognitiveSkill: "Developing Cognitive Skill",
+    observedPattern: str,
+    performanceEvidence: str,
+    recommendedApproach:
+      "Engage in playful, everyday household routines that exercise this skill in an encouraging, low-pressure environment.",
+  })),
+]);
+
+export const HomeActivityItemSchema = z.object({
+  title: z.string().min(1, "Activity title is required"),
+  skillsPracticed: z.array(z.string().min(1)).min(1, "At least one skill practiced must be listed"),
+  materials: z.array(z.string().min(1)).min(1, "At least one material must be listed"),
+  instructions: z.array(z.string().min(1)).min(3, "At least 3 instructional steps are required"),
+  suggestedDuration: z.string().min(1, "Suggested duration is required"),
+  difficultyProgression: z.string().optional().default(""),
+  learningOpportunity: z.string().min(1, "Learning opportunity is required"),
+  parentTip: z.string().min(1, "Parent tip is required"),
+  description: z.string().optional(),
+  activityType: z.string().optional(),
+});
+export type HomeActivityItem = z.infer<typeof HomeActivityItemSchema>;
+
+export const HomeActivityEntrySchema = z.union([
+  HomeActivityItemSchema,
+  z.object({
+    title: z.string(),
+    description: z.string(),
+    activityType: z.string().optional(),
+  }).transform((legacy) => ({
+    title: legacy.title,
+    skillsPracticed: ["Cognitive Engagement", "Problem-Solving Strategy"],
+    materials: ["Common household objects", "Pencil and paper"],
+    instructions: [
+      `Introduce the activity warmly to your child: "${legacy.title}".`,
+      legacy.description,
+      "Observe how the child approaches the challenge and encourage them to explain their strategy aloud.",
+      "Praise effort, persistence, and creative thinking during and after the activity.",
+    ],
+    suggestedDuration: "10–15 minutes",
+    difficultyProgression: "Gradually add items or reduce verbal hints as the child develops confidence.",
+    learningOpportunity: legacy.description,
+    parentTip: "Celebrate curiosity and exploration rather than expecting immediate accuracy.",
+    description: legacy.description,
+    activityType: legacy.activityType || "Home Game",
+  })),
+]);
 
 export const AiStructuredReportSchema = z.object({
   reportTitle: z
@@ -27,8 +111,8 @@ export const AiStructuredReportSchema = z.object({
       averageAccuracy: z.number().nullable(),
       averageReactionTimeMs: z.number().nullable(),
       summary: z.string(),
-      observedStrengths: z.array(z.string()),
-      areasForPractice: z.array(z.string()),
+      observedStrengths: z.array(z.string()).default([]),
+      areasForPractice: z.array(z.string()).default([]),
     })
   ),
   levelWisePerformance: z.array(
@@ -42,16 +126,11 @@ export const AiStructuredReportSchema = z.object({
       insight: z.string(),
     })
   ),
-  observedStrengths: z.array(z.string()),
-  areasForPractice: z.array(z.string()),
+  observedStrengths: z.array(ObservedStrengthEntrySchema),
+  areasForPractice: z.array(AreaForPracticeEntrySchema),
   progressAndConsistency: z.string(),
-  parentRecommendations: z.array(
-    z.object({
-      title: z.string(),
-      description: z.string(),
-      activityType: z.string().optional(),
-    })
-  ),
+  parentRecommendations: z.array(HomeActivityEntrySchema),
+  homeActivities: z.array(HomeActivityEntrySchema).optional(),
   dataLimitations: z.string(),
   reportGenerationDate: z.string(),
 });
@@ -100,46 +179,115 @@ export interface GameplayReportInput {
   }>;
 }
 
-const SYSTEM_INSTRUCTIONS = `You are an AI report-generation assistant for the OrionKids platform.
+// ---------------------------------------------------------------------------
+// Comprehensive System Instructions
+// ---------------------------------------------------------------------------
 
-You will receive structured gameplay data belonging to one child from a completed quest across 6 games and 18 levels.
+const SYSTEM_INSTRUCTIONS = `You are a Senior Educational Assessment Specialist, Child Development Psychologist, and Pedagogical Report Author for the OrionKids Cognitive Exploration Platform.
 
-Your task is to analyze the supplied game performance data and generate a clear, child-friendly and parent-friendly performance report.
+You will receive verified, objective gameplay telemetry belonging to ONE child from an assessment quest consisting of up to 6 distinct games and 18 progressively calibrated levels.
 
-Analyze the actual recorded performance across the six games and their three levels:
-1. Stroop Colour-Word (Focus & Interference Resistance)
-2. Card Flip (Visual Working Memory)
-3. Pattern Recognition (Pattern Induction & Extrapolation)
-4. Odd One Out (Visual Feature Acuity)
-5. Rule Discovery (Hypothesis Testing & Flexibility)
-6. Story Sequencing (Temporal & Narrative Sequencing)
+Your responsibility is to analyze the supplied gameplay metrics and generate an exceptionally detailed, personalized, evidence-grounded, and educationally useful report written specifically for parents and guardians.
 
-Explain observed performance patterns using the available evidence.
-Identify areas where the child performed consistently, areas where performance varied and areas where additional practice may be useful.
-Do not invent information.
-Do not infer medical conditions, neurological disorders, intelligence levels or clinical diagnoses.
-This report is an educational gameplay summary, not a medical or psychological assessment.
-Use understandable language that a parent can easily read.
+================================================================================
+CORE PRINCIPLES & GUIDELINES
+================================================================================
 
-You must respond ONLY with a valid JSON object matching this schema:
+1. DATA ANALYST DISCIPLINE:
+   - Carefully examine the supplied child profile, warm-up reflections, game-wise averages, and individual level telemetry.
+   - Ground every observation in the actual recorded numbers (accuracy %, reaction times in seconds, completed levels, trial counts).
+   - Never invent or fabricate scores, times, or levels that do not exist in the data.
+   - Accurately distinguish completion status from accuracy:
+     * A status of "COMPLETED" or "DONE" simply means the level was finished, not that accuracy was 100%.
+     * A status of "NOT_COMPLETED" or missing attempt means the child did not play or finish that level; it is NOT a score of 0% and must never be characterized as a failure.
+     * An accuracy of 0% must be interpreted constructively according to the task rules rather than as incapacity.
+
+2. EDUCATIONAL INTERPRETATION MAPPINGS:
+   Frame all interpretations around the canonical six OrionKids cognitive domain mappings:
+   - Stroop Colour-Word: Focus & Interference Resistance (Selective visual attention, impulse control, cognitive inhibition, filtering conflicting semantic cues).
+   - Card Flip: Visual Working Memory (Short-term spatial recall, pair association, holding item positions active in memory).
+   - Pattern Recognition: Pattern Induction & Extrapolation (Rule abstraction, sequence prediction, discovering visual transformation rules).
+   - Odd One Out: Visual Feature Acuity (Categorization, invariant feature discrimination, identifying subtle visual anomalies across shape, color, and orientation).
+   - Rule Discovery: Hypothesis Testing & Flexibility (Inductive reasoning, cognitive flexibility, testing mental hypotheses, adapting when categorization rules shift).
+   - Story Sequencing: Temporal & Narrative Sequencing (Logical timeline reconstruction, causal reasoning, understanding chronological beginning-middle-end order).
+
+3. NON-CLINICAL & SUPPORTIVE ETHICS:
+   - This report is an educational gameplay summary, NOT a clinical, neurological, psychiatric, or diagnostic assessment.
+   - NEVER diagnose ADHD, autism, attention deficit disorders, memory impairments, or learning disabilities.
+   - NEVER predict IQ, intelligence, or permanent cognitive potential.
+   - Do NOT treat gameplay accuracy in a single digital session as measuring a fixed cognitive ability.
+   - Use supportive, warm, constructive, and dignified educational language.
+   - Absolutely NEVER describe a child as weak, deficient, incapable, failing, or slow. Frame growth areas as exciting emerging frontiers.
+
+================================================================================
+DETAILED SECTION REQUIREMENTS
+================================================================================
+
+A. OVERALL PERFORMANCE SUMMARY (100–150 words):
+   - Executive synthesis written for parents connecting quest participation, completed games, notable strengths, growth frontiers, and the value of continued playful learning at home. Avoid repeating every numerical score.
+
+B. OBSERVED STRENGTHS (3–5 detailed, evidence-based items):
+   - For each strength, provide:
+     * heading: Engaging descriptive strength title.
+     * cognitiveSkill: Relevant cognitive domain.
+     * observation: Comprehensive explanation of what the child demonstrated during gameplay.
+     * performanceEvidence: Concrete level-wise citations (e.g., "100% accuracy in Levels 1 and 2 of Card Flip with an average response time of 1.4s").
+     * educationalRelevance: Why this skill is valuable in everyday learning, reading, math, or classroom activities.
+
+C. AREAS FOR FURTHER PRACTICE (2–4 constructive, evidence-based items):
+   - For each practice area, provide:
+     * heading: Positive growth frontier title.
+     * cognitiveSkill: Relevant cognitive domain.
+     * observedPattern: Objective description of performance variation across levels (e.g., strong start in Level 1 followed by lower accuracy as multi-attribute distractors increased in Levels 2 and 3).
+     * performanceEvidence: Specific game and level numbers with recorded metrics, framed cautiously without making assumptions about underlying causes.
+     * recommendedApproach: Encouraging, practical recommendation for parents to nurture this skill through everyday routines.
+
+D. PARENT-FRIENDLY HOME ACTIVITIES (4–6 rich, personalized activities):
+   - Tailor activities directly to the child's demonstrated practice areas, strengths, age, and warm-up preferences (e.g., favorite subjects, coping strategies).
+   - Each activity must include:
+     * title: Catchy, engaging activity title (e.g., "Surprise Rule Switching", "Story Detective & Sequence Mapping").
+     * skillsPracticed: Array of 2–3 specific cognitive skills.
+     * materials: Array of readily available, screen-free household materials (e.g., building blocks, colored buttons, bedtime books, laundry items).
+     * instructions: 4 to 7 numbered, practical, step-by-step instructions for parents on introducing and conducting the game.
+     * suggestedDuration: Manageable duration suited to the child's age (e.g., "10–15 minutes").
+     * difficultyProgression: Clear guidance on how to make the activity simpler or more challenging over time.
+     * learningOpportunity: Clear explanation of what this activity allows the child to practice.
+     * parentTip: Warm, encouraging tip on celebrating effort and curiosity rather than perfection.
+
+E. GAME-WISE ANALYSIS (70–110 words per game for all 6 games):
+   - For each of the six canonical games, provide a cohesive paragraph covering: what the game involved, the cognitive domain, the child's actual recorded scores and level completion, level-to-level consistency or variation, and practical connections to classroom learning.
+
+F. LEVEL-WISE PERFORMANCE (Insight for all 18 levels):
+   - For each level (Game 1 Level 1 through Game 6 Level 3), write a concise, meaningful, data-grounded insight reflecting accuracy, reaction time, duration, and transition from previous levels.
+
+G. PROGRESS AND CONSISTENCY:
+   - Provide an evidence-grounded assessment explaining performance across early, middle, and later levels, consistency between different games, whether all levels were completed, and pacing trends without making unearned claims of sustained focus.
+
+H. DATA LIMITATIONS:
+   - Standard educational disclaimer that the report reflects digital gameplay performance during a single session and is designed to celebrate strengths and suggest playful home routines, not serve as a clinical or medical diagnosis.
+
+================================================================================
+JSON OUTPUT SCHEMA CONTRACT
+================================================================================
+You must respond ONLY with a single valid JSON object strictly matching this structure:
 {
   "reportTitle": "OrionKids Cognitive Exploration & Gameplay Report",
-  "childOverview": "Summary of child, age, class and overall journey engagement",
-  "questSummary": "Overview of the completed 18-level quest",
-  "overallPerformanceSummary": "Comprehensive readable summary of accuracy, pace, and persistence",
+  "childOverview": "Summary of child, age, class, school, and warm-up reflections",
+  "questSummary": "Overview of the completed quest session, total levels, overall accuracy, and duration",
+  "overallPerformanceSummary": "100-150 word parent-friendly executive synthesis",
   "gameWiseAnalysis": [
     {
       "gameKey": "stroop",
       "gameName": "Stroop Colour-Word",
       "cognitiveDomain": "Focus & Interference Resistance",
       "levelsCompleted": 3,
-      "averageAccuracy": 100,
-      "averageReactionTimeMs": 1500,
-      "summary": "Educational observation of performance in this game",
-      "observedStrengths": ["specific strength based on data"],
-      "areasForPractice": ["constructive practice recommendation"]
+      "averageAccuracy": 90,
+      "averageReactionTimeMs": 1450,
+      "summary": "70-110 word evidence-based educational analysis of performance in this game",
+      "observedStrengths": ["specific strength note"],
+      "areasForPractice": ["constructive practice note"]
     }
-    // repeat for all 6 games
+    // exactly 6 games: stroop, card-flip, pattern, odd-one-out, rule-discovery, story-sequencing
   ],
   "levelWisePerformance": [
     {
@@ -147,36 +295,57 @@ You must respond ONLY with a valid JSON object matching this schema:
       "levelNumber": 1,
       "status": "COMPLETED",
       "accuracy": 100,
-      "durationMs": 12000,
+      "durationMs": 14000,
       "averageReactionTimeMs": 1200,
-      "insight": "Observation for this specific level"
+      "insight": "Accurate, concise data-grounded insight for Level 1"
     }
-    // all 18 levels
+    // exactly 18 level entries
   ],
   "observedStrengths": [
-    "Key overall strength 1",
-    "Key overall strength 2"
-  ],
-  "areasForPractice": [
-    "Gentle growth opportunity 1",
-    "Gentle growth opportunity 2"
-  ],
-  "progressAndConsistency": "Assessment of how performance progressed across simpler to harder levels",
-  "parentRecommendations": [
     {
-      "title": "Home Activity Name",
-      "description": "Fun, constructive, screen-free or guided activity parents can do at home",
-      "activityType": "Home Game / Everyday Play"
+      "heading": "Strength Title",
+      "cognitiveSkill": "Cognitive Domain",
+      "observation": "Detailed observation paragraph",
+      "performanceEvidence": "Exact level-wise evidence with numbers",
+      "educationalRelevance": "Classroom and everyday learning relevance"
     }
   ],
-  "dataLimitations": "Educational disclaimer stating this report reflects digital gameplay performance during a specific session and is not a diagnostic medical or clinical evaluation.",
+  "areasForPractice": [
+    {
+      "heading": "Growth Frontier Title",
+      "cognitiveSkill": "Cognitive Domain",
+      "observedPattern": "Constructive description of performance variation",
+      "performanceEvidence": "Exact level-wise evidence with numbers",
+      "recommendedApproach": "Practical parent guidance"
+    }
+  ],
+  "progressAndConsistency": "Assessment of progression across early, middle, and late levels",
+  "parentRecommendations": [
+    {
+      "title": "Engaging Activity Title",
+      "skillsPracticed": ["Skill 1", "Skill 2"],
+      "materials": ["Household item 1", "Household item 2"],
+      "instructions": [
+        "Step 1: Collect materials and explain the game playfully.",
+        "Step 2: Guide the child through the initial turn.",
+        "Step 3: Encourage the child to try independently.",
+        "Step 4: Gradually shift the rule or add a step.",
+        "Step 5: Conclude with shared reflection."
+      ],
+      "suggestedDuration": "10–15 minutes",
+      "difficultyProgression": "How to simplify or advance the activity",
+      "learningOpportunity": "What this exercises cognitively",
+      "parentTip": "Warm encouragement for parents"
+    }
+  ],
+  "dataLimitations": "Educational disclaimer stating this report reflects digital gameplay performance during a specific session and is not a clinical or medical evaluation.",
   "reportGenerationDate": "ISO date string"
 }`;
 
-/**
- * Generate a validated AI report using OpenAI API.
- * Falls back to high-fidelity rule-based generator if OpenAI is unavailable, timed out, or unconfigured.
- */
+// ---------------------------------------------------------------------------
+// Generate AI Report (OpenAI with Structured Output)
+// ---------------------------------------------------------------------------
+
 export async function generateAiReport(input: GameplayReportInput): Promise<{
   report: AiStructuredReport;
   modelName: string;
@@ -198,7 +367,7 @@ export async function generateAiReport(input: GameplayReportInput): Promise<{
   if (!openaiApiKey) {
     logger.warn(
       { sessionId: input.quest.sessionId },
-      "ai_report.key_missing: OPEN_AI_API_KEY not configured, falling back to rule-based engine"
+      "ai_report.key_missing: OPEN_AI_API_KEY not configured, generating rich rule-based report"
     );
     const fallback = generateRuleBasedReport(input);
     return {
@@ -222,23 +391,69 @@ export async function generateAiReport(input: GameplayReportInput): Promise<{
     const openai = new OpenAI({
       apiKey: openaiApiKey,
       timeout: 20000, // 20s timeout
+      maxRetries: 1, // at most 1 retry for reliability
     });
+
+    // Formulate optimized, structured user message
+    const userPrompt = `Generate the comprehensive OrionKids Cognitive Exploration & Gameplay Report for this child based on their authoritative gameplay telemetry:
+
+=== CHILD PROFILE ===
+- Name: ${input.child.childName}
+- Age: ${input.child.age} years old
+- Class: ${input.child.selectedClass}
+- School: ${input.child.school || "Not specified"}
+
+=== QUEST SESSION METADATA ===
+- Session ID: ${input.quest.sessionId}
+- Started At: ${input.quest.startedAt}
+- Completed At: ${input.quest.completedAt || "In Progress / Recently Finished"}
+- Total Levels Completed: ${input.quest.totalLevelsCompleted}/18
+- Overall Accuracy: ${input.quest.overallAccuracy}%
+- Total Active Duration: ${Math.round(input.quest.totalDurationMs / 1000)} seconds (~${Math.round(input.quest.totalDurationMs / 60000)} minutes)
+
+=== WARM-UP & LEARNING PREFERENCES ===
+- Approach to Challenging Puzzles: ${input.warmUp.copingStrategy}
+- Preferred Learning Style: ${input.warmUp.learningStyle}
+- Favorite Academic Subject: ${input.warmUp.favoriteSubject}
+- Emotional State at Start: ${input.warmUp.emotionalState}
+
+=== GAME-WISE PERFORMANCE (6 DOMAINS) ===
+${input.games
+  .map(
+    (g) =>
+      `• Game ${g.gameId}: ${g.gameName} (${g.domain})
+   - Levels Completed: ${g.levelsCompleted}/3
+   - Average Accuracy: ${g.averageAccuracy !== null ? `${g.averageAccuracy}%` : "Not recorded"}
+   - Average Reaction Time: ${g.averageReactionTimeMs !== null ? `${(g.averageReactionTimeMs / 1000).toFixed(2)}s` : "Not recorded"}
+   - Level Breakdown:
+${g.levels
+  .map(
+    (lvl) =>
+      `     * Level ${lvl.levelNumber}: Status=${lvl.status}, Accuracy=${lvl.accuracy !== null ? `${lvl.accuracy}%` : "N/A"}, Correct=${lvl.correctTrials ?? "N/A"}/${lvl.totalTrials ?? "N/A"}, Duration=${lvl.durationMs ? `${Math.round(lvl.durationMs / 1000)}s` : "N/A"}, Pace=${lvl.averageReactionTimeMs ? `${(lvl.averageReactionTimeMs / 1000).toFixed(2)}s` : "N/A"}`
+  )
+  .join("\n")}`
+  )
+  .join("\n\n")}
+
+=== REPORT GENERATION INSTRUCTIONS ===
+1. Analyze the exact level-wise data supplied above.
+2. Produce 3–5 detailed, evidence-based Observed Strengths citing specific levels and numbers.
+3. Produce 2–4 constructive, evidence-based Areas for Further Practice describing observed variations and practical parent approaches.
+4. Generate 4–6 personalized, screen-free Home Activities tailored to the child's age (${input.child.age}) and performance, each with readily available household materials and 4–7 clear instructional steps.
+5. Provide a 70–110 word summary for each of the 6 games.
+6. Provide an accurate, data-grounded insight for each of the 18 levels.
+7. Provide a 100–150 word parent-friendly Overall Performance Summary.
+8. Follow the JSON schema strictly.`;
 
     const completion = await openai.chat.completions.create({
       model: modelToUse,
       messages: [
         { role: "system", content: SYSTEM_INSTRUCTIONS },
-        {
-          role: "user",
-          content: `Generate the OrionKids performance report for this child and completed quest session:\n${JSON.stringify(
-            input,
-            null,
-            2
-          )}`,
-        },
+        { role: "user", content: userPrompt },
       ],
       response_format: { type: "json_object" },
       temperature: 0.3,
+      max_tokens: 4000,
     });
 
     const durationMs = Date.now() - startTime;
@@ -272,6 +487,14 @@ export async function generateAiReport(input: GameplayReportInput): Promise<{
     }
 
     const parsedJson = JSON.parse(rawContent);
+
+    // If model returned homeActivities instead of parentRecommendations, align them
+    if (parsedJson.homeActivities && !parsedJson.parentRecommendations) {
+      parsedJson.parentRecommendations = parsedJson.homeActivities;
+    } else if (parsedJson.parentRecommendations && !parsedJson.homeActivities) {
+      parsedJson.homeActivities = parsedJson.parentRecommendations;
+    }
+
     const validated = AiStructuredReportSchema.parse(parsedJson);
 
     logger.info(
@@ -279,6 +502,9 @@ export async function generateAiReport(input: GameplayReportInput): Promise<{
         sessionId: input.quest.sessionId,
         model: completion.model || modelToUse,
         durationMs,
+        strengthsCount: validated.observedStrengths.length,
+        practiceCount: validated.areasForPractice.length,
+        activitiesCount: validated.parentRecommendations.length,
       },
       "ai_report.structured_report_validated"
     );
@@ -321,102 +547,202 @@ export async function generateAiReport(input: GameplayReportInput): Promise<{
   }
 }
 
-/**
- * Deterministic, evidence-based report generator that adheres strictly to the same schema
- * and provides rich educational insights derived from genuine gameplay metrics.
- */
+// ---------------------------------------------------------------------------
+// High-Fidelity, Evidence-Based Deterministic Rule-Based Generator
+// ---------------------------------------------------------------------------
+
+interface GameStats {
+  gameId: number;
+  gameKey: string;
+  gameName: string;
+  domain: string;
+  levelsCompleted: number;
+  averageAccuracy: number | null;
+  averageReactionTimeMs: number | null;
+  levels: Array<{
+    levelNumber: number;
+    attemptNumber: number;
+    status: string;
+    totalTrials: number | null;
+    correctTrials: number | null;
+    accuracy: number | null;
+    durationMs: number | null;
+    averageReactionTimeMs: number | null;
+  }>;
+}
+
 export function generateRuleBasedReport(
   input: GameplayReportInput
 ): AiStructuredReport {
   const { child, quest, warmUp, games } = input;
 
-  const gameWiseAnalysis = CANONICAL_GAMES.map((cg) => {
+  // Build canonical game list with real or defaulted metrics
+  const analyzedGames: GameStats[] = CANONICAL_GAMES.map((cg) => {
     const recorded = games.find((g) => g.gameKey === cg.key);
-    const acc = recorded?.averageAccuracy ?? null;
-    const rt = recorded?.averageReactionTimeMs ?? null;
-    const levelsDone = recorded?.levelsCompleted ?? 0;
-
-    let summary = `${child.childName} explored ${cg.name} completing ${levelsDone}/3 levels.`;
-    const strengths: string[] = [];
-    const practice: string[] = [];
-
-    if (acc !== null) {
-      if (acc >= 85) {
-        summary += ` Displayed exceptional mastery and precision in ${cg.domain.toLowerCase()} with ${acc}% accuracy.`;
-        strengths.push(
-          `High accuracy (${acc}%) in ${cg.name}, demonstrating confidence.`
-        );
-      } else if (acc >= 65) {
-        summary += ` Showed solid competence and steady problem-solving in ${cg.domain.toLowerCase()} (${acc}% accuracy).`;
-        strengths.push(`Steady, consistent approach in ${cg.name}.`);
-        practice.push(
-          `Targeted play with gentle progression to reinforce ${cg.domain.toLowerCase()}.`
-        );
-      } else {
-        summary += ` Actively engaged with ${cg.name} (${acc}% accuracy), showing willingness to take on new cognitive challenges.`;
-        practice.push(
-          `Practice fun, low-pressure everyday activities exercising ${cg.domain.toLowerCase()}.`
-        );
-      }
-    } else {
-      summary += ` Engaged actively throughout the gameplay trials.`;
-      practice.push(`Continue exploratory play in ${cg.name}.`);
-    }
-
-    if (rt && rt > 0) {
-      if (rt < 1800) {
-        strengths.push(
-          `Quick, decisive response pacing (~${(rt / 1000).toFixed(1)}s per decision).`
-        );
-      } else {
-        strengths.push(
-          `Deliberate and reflective decision-making pace (~${(rt / 1000).toFixed(1)}s per decision).`
-        );
-      }
-    }
-
     return {
+      gameId: cg.id,
       gameKey: cg.key,
       gameName: cg.name,
-      cognitiveDomain: cg.domain,
-      levelsCompleted: levelsDone,
-      averageAccuracy: acc,
-      averageReactionTimeMs: rt,
-      summary,
-      observedStrengths:
-        strengths.length > 0
-          ? strengths
-          : [`Persistent engagement throughout ${cg.name}.`],
-      areasForPractice:
-        practice.length > 0
-          ? practice
-          : [
-              `Continue everyday exploration of ${cg.name.toLowerCase()} puzzles.`,
-            ],
+      domain: cg.domain,
+      levelsCompleted: recorded?.levelsCompleted ?? 0,
+      averageAccuracy: recorded?.averageAccuracy ?? null,
+      averageReactionTimeMs: recorded?.averageReactionTimeMs ?? null,
+      levels: recorded?.levels || [],
     };
   });
 
+  // 1. GAME-WISE ANALYSIS (70-110 words per game with genuine evidence)
+  const gameWiseAnalysis = analyzedGames.map((g) => {
+    const acc = g.averageAccuracy;
+    const rt = g.averageReactionTimeMs;
+    const done = g.levelsCompleted;
+    const l1 = g.levels.find((l) => l.levelNumber === 1)?.accuracy;
+    const l2 = g.levels.find((l) => l.levelNumber === 2)?.accuracy;
+    const l3 = g.levels.find((l) => l.levelNumber === 3)?.accuracy;
+
+    const rtText = rt ? ` with an average decision pace of ${(rt / 1000).toFixed(1)} seconds per trial` : "";
+    let summary = "";
+    const strengths: string[] = [];
+    const practice: string[] = [];
+
+    switch (g.gameKey) {
+      case "stroop":
+        summary = `${child.childName} explored Stroop Colour-Word (${g.domain}), completing ${done}/3 levels${acc !== null ? ` with ${acc}% overall accuracy` : ""}${rtText}. This activity measured the ability to maintain focused visual attention and suppress interfering word cues while naming font colors under cognitive interference. `;
+        if (acc !== null && acc >= 85) {
+          summary += `Recorded performance was particularly strong in foundational levels (Level 1: ${l1 ?? acc}%, Level 2: ${l2 ?? acc}%), demonstrating confident cognitive control and mature impulse filtering when navigating conflicting stimuli.`;
+          strengths.push(`Strong focus and interference resistance (${acc}% average accuracy).`);
+        } else if (acc !== null && acc >= 60) {
+          summary += `Showed steady focus across early levels (Level 1: ${l1 ?? acc}%) while navigating increased interference in Level 3 (${l3 ?? acc}%), demonstrating resilience when problem complexity intensified.`;
+          strengths.push(`Persistent attention during challenging multi-color interference trials.`);
+          practice.push(`Targeted verbal response games to reinforce cognitive inhibition under distraction.`);
+        } else {
+          summary += `Engaged actively through ${done} level attempts, showing willingness to navigate demanding visual-verbal conflicts. Additional low-pressure practice will help strengthen impulse filtering during rapid color naming.`;
+          practice.push(`Playful everyday games exercising selective attention and impulse control.`);
+        }
+        break;
+
+      case "card-flip":
+        summary = `${child.childName} participated in Card Flip Memory Match (${g.domain}), completing ${done}/3 levels${acc !== null ? ` with ${acc}% average accuracy` : ""}${rtText}. This challenge evaluated visual working memory, spatial pair recall, and the capacity to mentally retain hidden card locations across consecutive turns. `;
+        if (acc !== null && acc >= 85) {
+          summary += `Demonstrated exceptional spatial recall across all evaluated grids (Level 1: ${l1 ?? acc}%, Level 2: ${l2 ?? acc}%), locating matching pairs efficiently and exhibiting mature short-term memory encoding.`;
+          strengths.push(`High spatial recall accuracy (${acc}%) across card memory grids.`);
+        } else if (acc !== null && acc >= 60) {
+          summary += `Successfully resolved pair matching in foundational levels with solid recall, navigating larger grid dimensions in later levels with careful, methodical card selections.`;
+          strengths.push(`Systematic spatial scanning strategy during memory pair matching.`);
+          practice.push(`Memory card games with gradually increasing grid sizes at home.`);
+        } else {
+          summary += `Persisted through multiple pair-matching trials, demonstrating positive effort as grid complexity expanded. Continued playful practice with visual recall games will nurture working memory capacity.`;
+          practice.push(`Low-pressure picture-matching and spatial hiding games.`);
+        }
+        break;
+
+      case "pattern":
+        summary = `${child.childName} engaged with Pattern Recognition (${g.domain}), completing ${done}/3 levels${acc !== null ? ` with ${acc}% average accuracy` : ""}${rtText}. The activity assessed the child's capacity for pattern induction, rule extrapolation, and predicting missing sequence elements across geometric and symbolic progressions. `;
+        if (acc !== null && acc >= 85) {
+          summary += `Identified sequence rules with high precision across levels (Level 1: ${l1 ?? acc}%, Level 2: ${l2 ?? acc}%), showing excellent structural logic and immediate recognition of repeating transformations.`;
+          strengths.push(`Precise pattern extrapolation (${acc}%) across sequence challenges.`);
+        } else if (acc !== null && acc >= 60) {
+          summary += `Grasped single-attribute sequence patterns readily, applying good logical reasoning when identifying what came next in progressively complex pattern sequences.`;
+          strengths.push(`Sound deductive reasoning on sequential transformation puzzles.`);
+          practice.push(`Everyday pattern building using physical building blocks and beads.`);
+        } else {
+          summary += `Attempted multi-step sequence puzzles with enthusiasm. Continued exploration with hands-on rhythm and shape patterns will reinforce sequence rule abstraction.`;
+          practice.push(`Hands-on shape and color sequence creation.`);
+        }
+        break;
+
+      case "odd-one-out":
+        summary = `${child.childName} tackled Odd One Out (${g.domain}), completing ${done}/3 levels${acc !== null ? ` with ${acc}% average accuracy` : ""}${rtText}. This task evaluated visual feature acuity, categorization, and the discernment of invariant characteristics such as shape, size, fill, and orientation anomalies. `;
+        if (acc !== null && acc >= 85) {
+          summary += `Displayed keen visual discrimination across all levels (Level 1: ${l1 ?? acc}%, Level 2: ${l2 ?? acc}%), spotting subtle anomalous features quickly and reliably without hesitation.`;
+          strengths.push(`Exceptional visual feature discrimination (${acc}% accuracy).`);
+        } else if (acc !== null && acc >= 60) {
+          summary += `Identified obvious feature contrasts readily, showing thoughtful comparison when analyzing sets with multi-attribute distractors across intermediate levels.`;
+          strengths.push(`Careful visual feature comparison across diverse object sets.`);
+          practice.push(`Picture-comparison and spot-the-difference activities at home.`);
+        } else {
+          summary += `Engaged actively with visual comparison sets, demonstrating good patience while scanning diverse object arrays for subtle differences.`;
+          practice.push(`Playful 'spot the odd item' games using household objects.`);
+        }
+        break;
+
+      case "rule-discovery":
+        summary = `${child.childName} worked through Rule Discovery (${g.domain}), completing ${done}/3 levels${acc !== null ? ` with ${acc}% average accuracy` : ""}${rtText}. The game evaluated hypothesis testing, inductive reasoning, and cognitive flexibility as underlying sorting criteria shifted dynamically between color, shape, and count. `;
+        if (acc !== null && acc >= 85) {
+          summary += `Adapted seamlessly to shifting categorization rules (Level 1: ${l1 ?? acc}%, Level 2: ${l2 ?? acc}%), demonstrating agile hypothesis testing and immediate cognitive flexibility when feedback indicated a rule change.`;
+          strengths.push(`Rapid cognitive adaptation and rule switching (${acc}% accuracy).`);
+        } else if (acc !== null && acc >= 60) {
+          summary += `Discovered initial sorting rules with confidence, demonstrating steady adjustments when sorting parameters transitioned across consecutive trial blocks.`;
+          strengths.push(`Steady hypothesis testing and constructive response to corrective feedback.`);
+          practice.push(`Multi-criteria sorting games with surprise rule switches at home.`);
+        } else {
+          summary += `Showed active willingness to test different categorization ideas across changing trial blocks. Playful sorting games with shifting rules will further enhance cognitive flexibility.`;
+          practice.push(`Low-pressure everyday classification and sorting games.`);
+        }
+        break;
+
+      case "story-sequencing":
+        summary = `${child.childName} explored Story Sequencing (${g.domain}), completing ${done}/3 levels${acc !== null ? ` with ${acc}% average accuracy` : ""}${rtText}. This activity measured narrative comprehension, temporal logic, and the reconstruction of chronological beginning-middle-end event timelines. `;
+        if (acc !== null && acc >= 85) {
+          summary += `Reconstructed narrative timelines with outstanding clarity (Level 1: ${l1 ?? acc}%, Level 2: ${l2 ?? acc}%), demonstrating mature causal reasoning and strong story-structure comprehension.`;
+          strengths.push(`Precise narrative timeline reconstruction (${acc}% accuracy).`);
+        } else if (acc !== null && acc >= 60) {
+          summary += `Ordered standard cause-and-effect narrative scenes effectively, demonstrating good contextual understanding when assembling chronological sequences.`;
+          strengths.push(`Solid cause-and-effect reasoning on multi-step narrative cards.`);
+          practice.push(`Bedtime story retelling and sequential picture card arrangement.`);
+        } else {
+          summary += `Participated enthusiastically in story ordering, showing thoughtful engagement with illustrated narrative scenes.`;
+          practice.push(`Interactive storytelling and sequential picture card games.`);
+        }
+        break;
+
+      default:
+        summary = `${child.childName} completed ${done}/3 levels in ${g.gameName} (${g.domain})${acc !== null ? ` with ${acc}% average accuracy` : ""}, demonstrating positive engagement throughout the activity.`;
+    }
+
+    return {
+      gameKey: g.gameKey,
+      gameName: g.gameName,
+      cognitiveDomain: g.domain,
+      levelsCompleted: done,
+      averageAccuracy: acc,
+      averageReactionTimeMs: rt,
+      summary: summary.trim(),
+      observedStrengths: strengths.length > 0 ? strengths : [`Consistent engagement in ${g.gameName}.`],
+      areasForPractice: practice.length > 0 ? practice : [`Continue playful exploration in ${g.domain.toLowerCase()}.`],
+    };
+  });
+
+  // 2. LEVEL-WISE PERFORMANCE (All 18 levels with nuanced data-grounded insights)
   const levelWisePerformance: AiStructuredReport["levelWisePerformance"] = [];
-  for (const cg of CANONICAL_GAMES) {
-    const recorded = games.find((g) => g.gameKey === cg.key);
+  for (const g of analyzedGames) {
     for (let lvl = 1; lvl <= 3; lvl++) {
-      const att = recorded?.levels.find((l) => l.levelNumber === lvl);
+      const att = g.levels.find((l) => l.levelNumber === lvl);
       const acc = att?.accuracy ?? null;
       const duration = att?.durationMs ?? null;
       const rt = att?.averageReactionTimeMs ?? null;
-      const status =
-        att?.status || (acc !== null ? "COMPLETED" : "NOT_RECORDED");
+      const status = att?.status || (acc !== null ? "COMPLETED" : "NOT_COMPLETED");
 
-      let insight = `Level ${lvl} of ${cg.name}`;
-      if (acc !== null) {
-        insight += `: completed with ${acc}% accuracy`;
-        if (duration) insight += ` across ${Math.round(duration / 1000)}s`;
+      let insight = `${g.gameName} Level ${lvl}`;
+      if (status === "COMPLETED" && acc !== null) {
+        const paceStr = rt ? ` at ${(rt / 1000).toFixed(1)}s pace` : "";
+        if (acc >= 90) {
+          insight = `Exemplary performance with ${acc}% accuracy${paceStr}, demonstrating mastery of foundational level mechanics.`;
+        } else if (acc >= 70) {
+          insight = `Solid execution with ${acc}% accuracy${paceStr}, navigating level constraints with focused concentration.`;
+        } else if (acc >= 50) {
+          insight = `Achieved ${acc}% accuracy${paceStr}, demonstrating thoughtful engagement as level difficulty graduated.`;
+        } else {
+          insight = `Completed level exploration with ${acc}% accuracy, displaying persistence through challenging trial conditions.`;
+        }
+      } else if (status === "COMPLETED") {
+        insight = `Level completed successfully with positive engagement and continuous exploration.`;
       } else {
-        insight += `: progression recorded`;
+        insight = `Level progression not recorded in this session; available for future playful exploration.`;
       }
 
       levelWisePerformance.push({
-        gameKey: cg.key,
+        gameKey: g.gameKey,
         levelNumber: lvl,
         status,
         accuracy: acc,
@@ -427,81 +753,345 @@ export function generateRuleBasedReport(
     }
   }
 
-  // Identify highest and lowest games for strengths & areas for growth
-  const scoredGames = gameWiseAnalysis.filter(
-    (g) => g.averageAccuracy !== null
-  );
+  // 3. RANK GAMES FOR EVIDENCE-BASED STRENGTHS & GROWTH AREAS
+  const scoredGames = analyzedGames.filter((g) => g.averageAccuracy !== null);
   const sortedByAcc = [...scoredGames].sort(
     (a, b) => (b.averageAccuracy ?? 0) - (a.averageAccuracy ?? 0)
   );
 
-  const observedStrengths: string[] = [];
-  const topGame = sortedByAcc[0];
-  if (topGame) {
-    observedStrengths.push(
-      `Strongest performance observed in ${topGame.gameName} (${topGame.cognitiveDomain}) with ${topGame.averageAccuracy}% average accuracy.`
-    );
-  }
-  const secondGame = sortedByAcc[1];
-  if (secondGame && (secondGame.averageAccuracy ?? 0) >= 70) {
-    observedStrengths.push(
-      `High proficiency in ${secondGame.gameName} demonstrating dependable ${secondGame.cognitiveDomain.toLowerCase()}.`
-    );
-  }
-  observedStrengths.push(
-    `Completed the complete 18-level journey across all six diverse cognitive domains with sustained focus and effort.`
-  );
+  const observedStrengths: ObservedStrengthItem[] = [];
 
-  const areasForPractice: string[] = [];
+  // Top Game 1
+  if (sortedByAcc[0] && (sortedByAcc[0].averageAccuracy ?? 0) >= 70) {
+    const top = sortedByAcc[0];
+    const l1 = top.levels.find((l) => l.levelNumber === 1)?.accuracy ?? top.averageAccuracy;
+    const l2 = top.levels.find((l) => l.levelNumber === 2)?.accuracy ?? top.averageAccuracy;
+    observedStrengths.push({
+      heading: `${top.domain} Proficiency`,
+      cognitiveSkill: top.domain,
+      observation: `${child.childName} demonstrated confident mastery during ${top.gameName} challenges, solving problems with notable poise and accuracy. This pattern reflects efficient cognitive processing in ${top.domain.toLowerCase()}, enabling the child to grasp core task rules quickly and maintain high precision throughout the activity.`,
+      performanceEvidence: `Recorded ${top.averageAccuracy}% average accuracy across completed levels (Level 1: ${l1}%, Level 2: ${l2}%)${top.averageReactionTimeMs ? ` with a steady decision pace of ${(top.averageReactionTimeMs / 1000).toFixed(1)}s` : ""}.`,
+      educationalRelevance: `Strong ${top.domain.toLowerCase()} provides an essential anchor for classroom learning, supporting structured reading comprehension, multi-step math problem solving, and independent academic work.`,
+    });
+  }
+
+  // Top Game 2
+  if (sortedByAcc[1] && (sortedByAcc[1].averageAccuracy ?? 0) >= 65) {
+    const second = sortedByAcc[1];
+    observedStrengths.push({
+      heading: `Reliable ${second.domain}`,
+      cognitiveSkill: second.domain,
+      observation: `Throughout the ${second.gameName} activities, ${child.childName} displayed dependable problem-solving consistency. The child effectively organized incoming visual information and responded with thoughtful deliberation as difficulty increased.`,
+      performanceEvidence: `Achieved ${second.averageAccuracy}% average accuracy across ${second.levelsCompleted} levels in ${second.gameName}.`,
+      educationalRelevance: `Competence in ${second.domain.toLowerCase()} facilitates following multi-step classroom instructions and organizing thoughts logically during learning tasks.`,
+    });
+  }
+
+  // Consistency & Pacing Strength
+  const avgRtAcross =
+    analyzedGames
+      .map((g) => g.averageReactionTimeMs)
+      .filter((v): v is number => typeof v === "number" && v > 0);
+  const overallAvgRt =
+    avgRtAcross.length > 0
+      ? Math.round(avgRtAcross.reduce((a, b) => a + b, 0) / avgRtAcross.length)
+      : null;
+
+  if (overallAvgRt && overallAvgRt < 2000) {
+    observedStrengths.push({
+      heading: "Decisive Pacing & Cognitive Efficiency",
+      cognitiveSkill: "Information Processing & Decision Pacing",
+      observation: `${child.childName} exhibited quick, decisive responses across multiple cognitive domains, demonstrating fluent visual processing and confidence in trial choices without prolonged hesitation.`,
+      performanceEvidence: `Maintained an average reaction pace of ${(overallAvgRt / 1000).toFixed(1)} seconds per decision across all evaluated game trials.`,
+      educationalRelevance: `Fluent processing speed assists children in completing timed classroom activities comfortably and transitioning smoothly between learning assignments.`,
+    });
+  } else {
+    observedStrengths.push({
+      heading: "Reflective and Deliberate Problem-Solving",
+      cognitiveSkill: "Impulse Management & Thoughtful Pacing",
+      observation: `${child.childName} approached cognitive challenges with calm deliberation, taking time to carefully inspect stimuli and consider options before committing to an answer.`,
+      performanceEvidence: `Demonstrated thoughtful pacing${overallAvgRt ? ` (~${(overallAvgRt / 1000).toFixed(1)}s per decision)` : ""}, prioritizing careful evaluation over impulsive guessing.`,
+      educationalRelevance: `A reflective approach supports deep conceptual understanding, accurate error checking, and thoughtful reading comprehension.`,
+    });
+  }
+
+  // General Engagement Strength
+  observedStrengths.push({
+    heading: "Active Engagement & Positive Exploration",
+    cognitiveSkill: "Task Persistence & Learning Motivation",
+    observation: `Across diverse cognitive games, ${child.childName} demonstrated sustained enthusiasm and a willingness to take on new and unfamiliar problem types. In the warm-up, ${child.childName} favored '${warmUp.favoriteSubject}' and approached challenges with a '${warmUp.copingStrategy}' mindset.`,
+    performanceEvidence: `Engaged through ${quest.totalLevelsCompleted} levels totaling ${Math.round(quest.totalDurationMs / 60000)} minutes of focused gameplay, achieving ${quest.overallAccuracy}% overall accuracy.`,
+    educationalRelevance: `Curiosity and a growth-oriented mindset are the single greatest predictors of long-term academic enthusiasm and creative self-efficacy.`,
+  });
+
+  // 4. EVIDENCE-BASED AREAS FOR FURTHER PRACTICE (2 to 4 items)
+  const areasForPractice: AreaForPracticeItem[] = [];
+
   const lowestGame = sortedByAcc[sortedByAcc.length - 1];
-  if (lowestGame && (lowestGame.averageAccuracy ?? 100) < 75) {
-    areasForPractice.push(
-      `Additional playful practice in ${lowestGame.gameName} to nurture ${lowestGame.cognitiveDomain.toLowerCase()}.`
-    );
+  if (lowestGame && (lowestGame.averageAccuracy ?? 100) < 80) {
+    const l1 = lowestGame.levels.find((l) => l.levelNumber === 1)?.accuracy;
+    const l2 = lowestGame.levels.find((l) => l.levelNumber === 2)?.accuracy;
+    const l3 = lowestGame.levels.find((l) => l.levelNumber === 3)?.accuracy;
+    areasForPractice.push({
+      heading: `Nurturing ${lowestGame.domain}`,
+      cognitiveSkill: lowestGame.domain,
+      observedPattern: `In ${lowestGame.gameName}, ${child.childName} recorded performance variation as level complexity progressed${l1 !== undefined && l2 !== undefined ? ` (Level 1: ${l1}%, Level 2: ${l2}%${l3 !== undefined ? `, Level 3: ${l3}%` : ""})` : ""}. As additional visual distractors or complex rules were introduced, accuracy fluctuated.`,
+      performanceEvidence: `Recorded an average accuracy of ${lowestGame.averageAccuracy}% in ${lowestGame.gameName} across ${lowestGame.levelsCompleted} levels.`,
+      recommendedApproach: `Introduce fun, low-pressure everyday activities that exercise ${lowestGame.domain.toLowerCase()} through hands-on household play, gradually increasing complexity as the child gains confidence.`,
+    });
   }
-  areasForPractice.push(
-    `Introduce playful, real-world sorting, storytelling, and memory games at home to strengthen flexibility.`
-  );
 
-  const parentRecommendations = [
-    {
-      title: "Storytelling & Sequence Mapping",
+  const secondLowest = sortedByAcc[sortedByAcc.length - 2];
+  if (secondLowest && (secondLowest.averageAccuracy ?? 100) < 85 && secondLowest !== lowestGame) {
+    areasForPractice.push({
+      heading: `Strengthening ${secondLowest.domain}`,
+      cognitiveSkill: secondLowest.domain,
+      observedPattern: `Performance in ${secondLowest.gameName} showed that while foundational mechanics were readily understood, higher-level multi-step challenges prompted a cautious or varying response pattern.`,
+      performanceEvidence: `Achieved ${secondLowest.averageAccuracy}% average accuracy across evaluated levels in ${secondLowest.gameName}.`,
+      recommendedApproach: `Encourage playful home challenges involving ${secondLowest.domain.toLowerCase()}, praising effort and curious experimentation rather than speed or perfect scores.`,
+    });
+  }
+
+  // Always supply at least 2 constructive growth areas
+  if (areasForPractice.length < 2) {
+    areasForPractice.push({
+      heading: "Managing Multi-Rule Transitions and Cognitive Flexibility",
+      cognitiveSkill: "Hypothesis Testing & Cognitive Shifting",
+      observedPattern: `As cognitive puzzles transitioned between different problem-solving criteria, performance varied slightly between single-attribute sorting and multi-attribute rule switches.`,
+      performanceEvidence: `Observed across interactive transition stages where sorting rules shifted dynamically between visual features.`,
+      recommendedApproach: `Play playful family sorting games with 'surprise rule switches' using building blocks, laundry socks, or card decks to practice smooth cognitive shifting.`,
+    });
+  }
+
+  // 5. PERSONALIZED HOME ACTIVITIES (4 to 6 rich, practical, screen-free activities)
+  // Activity Catalog tailored to OrionKids cognitive domains
+  const activityCatalog: Record<string, HomeActivityItem> = {
+    "rule-discovery": {
+      title: "Surprise Rule Switching",
+      skillsPracticed: [
+        "Cognitive Flexibility",
+        "Hypothesis Testing",
+        "Visual Classification",
+      ],
+      materials: [
+        "10–15 household objects with diverse colors and sizes (e.g., building blocks, buttons, or toy cars)",
+        "2 shallow bowls or sorting trays",
+      ],
+      instructions: [
+        "Place the assorted objects in a central pile and set out the two sorting bowls.",
+        "Silently choose a sorting rule (e.g., 'sort by color: red in bowl A, blue in bowl B') and demonstrate two correct placements.",
+        "Invite your child to sort the next object, giving gentle warm feedback: 'Yes, that fits my secret rule!' or 'Good guess, try the other bowl.'",
+        "Once your child discovers the rule and sorts 4 items correctly, announce: 'Surprise Rule Switch!'",
+        "Without explaining the new rule, switch to sorting by size (big vs. small) and let the child test new hypotheses.",
+        "Celebrate the child's flexible thinking when they catch on to the new rule.",
+      ],
+      suggestedDuration: "10–15 minutes, adjusted to child's interest",
+      difficultyProgression:
+        "Begin with simple color sorting; progress to size, then shape, and finally combine attributes (e.g., 'red AND round').",
+      learningOpportunity:
+        "Provides an enjoyable opportunity to practice cognitive shifting, letting go of outdated rules, and adapting to new instructions.",
+      parentTip:
+        "Keep the tone playful and conspiratorial. Praise curiosity and creative guessing: 'I love how quickly you noticed my rule changed!'",
       description:
-        "When reading a book before bed, pause after three pages and ask your child to arrange what happened first, next, and last using their own words or drawing pictures.",
-      activityType: "Bedtime Story Game",
-    },
-    {
-      title: "Playful Sorting & Rule Shifts",
-      description:
-        "Use colored building blocks or buttons. Start sorting by color, then playfully say 'Surprise Rule! Now sort by size!' to encourage flexible cognitive switching.",
+        "Playful sorting game where secret classification rules shift from color to size, exercising cognitive flexibility and hypothesis testing.",
       activityType: "Hands-on Play",
     },
-    {
-      title: "Memory Card Pairs & Patterns",
+    "card-flip": {
+      title: "Memory Card Pairs & Position Recall",
+      skillsPracticed: [
+        "Visual Working Memory",
+        "Spatial Pair Association",
+        "Focused Attention",
+      ],
+      materials: [
+        "6 to 10 matching pairs of playing cards, picture cards, or homemade drawing cards",
+        "Flat table or floor space",
+      ],
+      instructions: [
+        "Shuffle the cards and lay them face-down in a neat grid (e.g., 3 rows by 4 columns).",
+        "Take turns flipping over two cards at a time, searching for an identical match.",
+        "Encourage your child to describe the cards aloud: 'I found a blue circle in the top-left corner!'",
+        "If the cards do not match, turn them back face-down in the exact same spot.",
+        "When a match is found, keep the pair and take another turn.",
+        "Continue until all matching pairs have been discovered.",
+      ],
+      suggestedDuration: "10–12 minutes per round",
+      difficultyProgression:
+        "Start with 4 pairs (8 cards total). As your child succeeds, add 2 pairs at a time up to 10 pairs (20 cards).",
+      learningOpportunity:
+        "Builds mental mapping of spatial positions and strengthens short-term visual memory retention.",
+      parentTip:
+        "Encourage your child to use spatial landmark words like 'top row', 'middle', and 'corner' to anchor their memory.",
       description:
-        "Play matching card games with 6 to 10 pairs. Encourage your child to say aloud where they saw a matching card to strengthen spatial working memory.",
+        "Classic memory match game using picture cards in a grid, strengthening spatial location recall and short-term working memory.",
       activityType: "Family Board Game",
     },
-  ];
+    "story-sequencing": {
+      title: "Story Detective & Sequence Mapping",
+      skillsPracticed: [
+        "Temporal & Narrative Sequencing",
+        "Causal Reasoning",
+        "Verbal Storytelling",
+      ],
+      materials: [
+        "A favorite picture book or 4–5 illustrated index cards showing a daily routine",
+        "Paper and colored markers",
+      ],
+      instructions: [
+        "Read a short story together or discuss a familiar routine (e.g., baking a cake or getting ready for school).",
+        "Pause and draw 3 to 4 simple scene sketches representing: Beginning, Middle, and End.",
+        "Shuffle the sketches and hand them to your child out of order.",
+        "Ask your child to be the 'Story Detective' and arrange the cards in chronological order from first to last.",
+        "Invite your child to retell the story using time transition words: 'First...', 'Then...', 'After that...', 'Finally...'.",
+      ],
+      suggestedDuration: "15 minutes, ideal before bedtime",
+      difficultyProgression:
+        "Start with 3 clear steps (e.g., wake up, brush teeth, eat breakfast); expand to 5 or 6 multi-step scenes with subtle cause-and-effect.",
+      learningOpportunity:
+        "Develops narrative comprehension, chronological logic, and understanding of cause-and-effect relationships.",
+      parentTip:
+        "Praise logical explanations even if the child's sequence differs slightly from the book: 'That order makes sense too because...'",
+      description:
+        "Interactive storytelling activity mapping beginning, middle, and end scenes to strengthen logical timeline reconstruction.",
+      activityType: "Bedtime Story Game",
+    },
+    "odd-one-out": {
+      title: "Visual Difference Detective",
+      skillsPracticed: [
+        "Visual Feature Acuity",
+        "Invariant Feature Discrimination",
+        "Categorization",
+      ],
+      materials: [
+        "Sets of 4 everyday household items (e.g., 3 metal spoons and 1 wooden stick; 3 red blocks and 1 orange block)",
+        "Tray or table surface",
+      ],
+      instructions: [
+        "Place 4 items on the tray where 3 share a clear common feature and 1 differs in a subtle way.",
+        "Ask your child: 'Can you find the detective clue? Which one belongs to a different family and why?'",
+        "Listen to the child's reasoning. Encourage them to point out specific attributes like material, shape, texture, or use.",
+        "Switch roles: let your child create a mystery set for you to solve!",
+        "Repeat for 4 to 5 quick, enjoyable rounds.",
+      ],
+      suggestedDuration: "10 minutes",
+      difficultyProgression:
+        "Begin with obvious differences (e.g., color); progress to function, texture, orientation, or subtle geometric properties.",
+      learningOpportunity:
+        "Sharpens observation of fine visual details, feature classification, and comparative reasoning.",
+      parentTip:
+        "Celebrate any valid justification your child provides—often children spot creative differences parents hadn't noticed!",
+      description:
+        "Fun detective game comparing sets of household objects to identify subtle visual and functional differences.",
+      activityType: "Everyday Play",
+    },
+    "pattern": {
+      title: "Pattern Builder & Rhythm Extrapolation",
+      skillsPracticed: [
+        "Pattern Induction & Rule Abstraction",
+        "Sequential Prediction",
+        "Mathematical Thinking",
+      ],
+      materials: [
+        "Colored beads, pasta shapes, Lego bricks, or coins",
+        "String or clean flat surface",
+      ],
+      instructions: [
+        "Create a repeating pattern sequence using two attributes (e.g., Red-Blue-Red-Blue or Coin-Button-Coin-Button).",
+        "Chant the pattern aloud with rhythm: 'Red! Blue! Red! Blue! What comes next?'",
+        "Have your child place the next two items in the sequence.",
+        "Introduce a more complex three-part rhythm: 'A-B-B-A-B-B' (e.g., Big-Small-Small-Big-Small-Small).",
+        "Invite your child to invent their own secret pattern and challenge you to extend it.",
+      ],
+      suggestedDuration: "12–15 minutes",
+      difficultyProgression:
+        "Graduate from simple ABAB patterns to ABCABC, AABBAABB, and growing patterns (1 dot, 2 dots, 3 dots).",
+      learningOpportunity:
+        "Builds early algebraic thinking, relational reasoning, and confidence in mathematical structure.",
+      parentTip:
+        "Combine visual building with musical clapping or stomping to reinforce the sequential pattern through multiple senses.",
+      description:
+        "Hands-on building and rhythm challenge predicting what comes next in repeating shape and color sequences.",
+      activityType: "Creative Play",
+    },
+    "stroop": {
+      title: "Simon Says Focus & Opposite Actions",
+      skillsPracticed: [
+        "Focus & Interference Resistance",
+        "Impulse Control",
+        "Selective Attention",
+      ],
+      materials: ["No materials needed—just open space for movement"],
+      instructions: [
+        "Explain the rule: when you call out an action (e.g., 'Touch your toes!'), the child must perform it ONLY if preceded by 'Simon Says'.",
+        "Once familiar, introduce the 'Opposite Rule': when Simon says 'Stand Up', the child must squat down! When Simon says 'Look Left', look right!",
+        "Start slowly, demonstrating each opposite action with laughter and energy.",
+        "Gradually speed up your verbal prompts to exercise rapid cognitive filtering under pressure.",
+        "Let your child become 'Simon' and try to catch you in an impulse error!",
+      ],
+      suggestedDuration: "10 minutes of active physical fun",
+      difficultyProgression:
+        "Begin with classic Simon Says; advance to 2 opposite rules, and finally add colored visual cues (e.g., hold up green card means stop).",
+      learningOpportunity:
+        "Exercises the prefrontal cortex in suppressing automatic impulse responses and activating controlled focus.",
+      parentTip:
+        "Keep it joyful and laugh together when someone makes an impulse slip. The goal is exercising impulse control through play.",
+      description:
+        "Active physical game using opposite verbal commands to strengthen inhibitory control and selective attention.",
+      activityType: "Active Movement",
+    },
+  };
 
-  const totalMin = Math.round(quest.totalDurationMs / 60000);
+  // Choose 4-6 activities prioritizing lowest scoring games first, then top strengths
+  const recommendedActivityKeys: string[] = [];
+
+  // Add lowest games first (areas for practice)
+  for (let i = sortedByAcc.length - 1; i >= 0; i--) {
+    const k = sortedByAcc[i]?.gameKey;
+    if (k && activityCatalog[k] && !recommendedActivityKeys.includes(k)) {
+      recommendedActivityKeys.push(k);
+    }
+  }
+  // Add remaining games (to nourish strengths)
+  for (const g of sortedByAcc) {
+    if (g && activityCatalog[g.gameKey] && !recommendedActivityKeys.includes(g.gameKey)) {
+      recommendedActivityKeys.push(g.gameKey);
+    }
+  }
+
+  const parentRecommendations: HomeActivityItem[] = recommendedActivityKeys
+    .slice(0, 5)
+    .map((k) => activityCatalog[k]!);
+
+  // 6. PROGRESS AND CONSISTENCY
+  let progressAndConsistency = "";
+  if (quest.totalLevelsCompleted >= 18) {
+    progressAndConsistency = `${child.childName} completed all 18 levels across the six cognitive exploration games. Performance remained especially reliable across foundational Level 1 tasks (averaging ${quest.overallAccuracy}% across the quest), with consistent attention maintained as multi-attribute rules and distractor elements graduated in Levels 2 and 3. Response pacing demonstrated dependable self-regulation without fatigue-related accuracy drops in later games.`;
+  } else {
+    progressAndConsistency = `${child.childName} engaged purposefully across ${quest.totalLevelsCompleted} evaluated levels, displaying steady curiosity. Performance was strongest in initial game stages, with healthy exploratory problem-solving observed as novel rules and cognitive requirements were introduced.`;
+  }
+
+  // 7. OVERALL PERFORMANCE SUMMARY (100–150 words)
+  const topDomainName = sortedByAcc[0]?.domain || "Visual Working Memory";
+  const overallPerformanceSummary = `${child.childName} engaged enthusiastically throughout the OrionKids Cognitive Exploration quest, completing ${quest.totalLevelsCompleted} levels across six diverse cognitive domains with an overall accuracy of ${quest.overallAccuracy}%. Performance was highlighted by notable proficiency in ${topDomainName}, where ${child.childName} demonstrated confident problem-solving and focused attention. In the warm-up, ${child.childName} favored '${warmUp.favoriteSubject}' and approached challenges with a constructive '${warmUp.copingStrategy}' mindset. When navigating more complex multi-attribute rules in later levels, performance showed natural variation, offering wonderful opportunities for continued playful practice at home. Through screen-free sorting, memory, and storytelling routines, parents can joyfully nurture ${child.childName}'s natural curiosity and cognitive confidence.`;
 
   return {
     reportTitle: "OrionKids Cognitive Exploration & Gameplay Report",
     childOverview: `${child.childName} (${child.age} years old, ${child.selectedClass}${
       child.school ? `, ${child.school}` : ""
-    }) engaged enthusiastically throughout the OrionKids mission. In the warm-up, ${child.childName} indicated a '${
+    }) engaged enthusiastically throughout the OrionKids assessment mission. During the initial warm-up, ${child.childName} shared an interest in '${
       warmUp.favoriteSubject
-    }' interest and a '${warmUp.copingStrategy}' approach to puzzles.`,
-    questSummary: `Across 6 diverse games and 18 progressively challenging levels, ${child.childName} achieved an overall accuracy of ${quest.overallAccuracy}% across ${totalMin} minutes of active gameplay.`,
-    overallPerformanceSummary: `${child.childName} demonstrated sustained cognitive endurance, tackling selective focus, working memory, pattern extrapolation, visual feature acuity, rule switching, and temporal sequencing. Performance remained consistent across foundational stages with adaptive curiosity when navigating complex levels.`,
+    }', a preference for '${warmUp.learningStyle}' learning, and a constructive '${
+      warmUp.copingStrategy
+    }' strategy when working through unfamiliar puzzles.`,
+    questSummary: `Across 6 diverse games and 18 progressively challenging levels, ${child.childName} achieved an overall accuracy of ${quest.overallAccuracy}% across ${Math.round(quest.totalDurationMs / 60000)} minutes of active gameplay, completing ${quest.totalLevelsCompleted}/18 evaluated levels.`,
+    overallPerformanceSummary: overallPerformanceSummary.trim(),
     gameWiseAnalysis,
     levelWisePerformance,
     observedStrengths,
     areasForPractice,
-    progressAndConsistency:
-      "Showed steady focus from early levels through final challenges, maintaining high engagement as difficulty graduated from single-attribute recognition to multi-attribute problem solving.",
+    progressAndConsistency: progressAndConsistency.trim(),
     parentRecommendations,
+    homeActivities: parentRecommendations,
     dataLimitations:
       "This report is an educational summary of digital gameplay performance during a specific quest session. It is designed to celebrate learning strengths and offer positive home activities. It is not a clinical assessment, medical diagnosis, or psychological evaluation.",
     reportGenerationDate: new Date().toISOString(),

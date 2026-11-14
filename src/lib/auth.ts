@@ -78,6 +78,26 @@ export const auth = betterAuth({
           }
         },
       },
+      update: {
+        before: async (user) => {
+          // Prevent null/empty image from overwriting valid existing profile picture
+          if (!user.image) {
+            const existing = await prisma.user.findUnique({
+              where: { id: user.id },
+              select: { image: true },
+            });
+            if (existing?.image) {
+              return {
+                data: {
+                  ...user,
+                  image: existing.image,
+                },
+              };
+            }
+          }
+          return { data: user };
+        },
+      },
     },
     session: {
       create: {
@@ -119,7 +139,7 @@ export const auth = betterAuth({
     },
   },
   onAPIError: {
-    errorURL: `${env.CORS_ORIGINS[0] || "http://localhost:3000"}/login`,
+    errorURL: `${env.BETTER_AUTH_URL}/api/auth/error`,
   },
   rateLimit: {
     enabled: true,

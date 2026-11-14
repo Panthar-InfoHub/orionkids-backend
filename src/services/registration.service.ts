@@ -16,6 +16,7 @@ export interface RegistrationStatusResult {
   userId: string;
   name: string;
   email: string;
+  image?: string | null;
   role: "USER" | "ADMIN";
   accountStatus: "PENDING" | "ACTIVE" | "RESTRICTED";
   termsAccepted: boolean;
@@ -98,6 +99,7 @@ export async function getRegistrationStatus(
       id: true,
       name: true,
       email: true,
+      image: true,
       role: true,
       status: true,
       termsAccepted: true,
@@ -174,6 +176,7 @@ export async function getRegistrationStatus(
     userId: user.id,
     name: user.name,
     email: user.email,
+    image: user.image,
     role: user.role,
     accountStatus: user.status,
     termsAccepted: isTermsValid,

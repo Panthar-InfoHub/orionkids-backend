@@ -1066,11 +1066,12 @@ export async function setUserStatus(
       });
     }
 
-    if (input.status === "RESTRICTED") {
-      await tx.session.deleteMany({
-        where: { userId: targetUserId },
-      });
-    }
+    // Note: Do not purge sessions immediately from PostgreSQL upon restriction.
+    // Retaining the session record allows the backend to authenticate the incoming request,
+    // recognize the user's authoritative RESTRICTED status, and deliver a structured
+    // ACCOUNT_RESTRICTED (403) response to route the client to the branded /account/restricted screen,
+    // rather than falling back to an unauthenticated (401) generic redirect to /login.
+    // All protected operational endpoints strictly reject RESTRICTED accounts via requireActive.
 
     return user;
   });

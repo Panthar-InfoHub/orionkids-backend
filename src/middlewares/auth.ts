@@ -21,30 +21,8 @@ export const requireAuth: RequestHandler = asyncHandler(
       throw new UnauthorizedError("Not authenticated", "UNAUTHENTICATED");
     }
 
-    // Better Auth includes custom additionalFields (role, status) directly on session.user.
-    // Reusing these skips a redundant database round-trip on every authenticated request.
-    const sessionUser = session.user as any;
-    if (
-      sessionUser &&
-      sessionUser.id &&
-      sessionUser.role &&
-      sessionUser.status
-    ) {
-      req.authCtx = {
-        userId: sessionUser.id,
-        sessionId: session.session.id,
-        role: sessionUser.role,
-        status: sessionUser.status,
-      };
-      setRequestContextUser(sessionUser.id, sessionUser.role);
-      logger.debug(
-        { userId: sessionUser.id, role: sessionUser.role },
-        "auth.session_authenticated"
-      );
-      return next();
-    }
-
-    // Fallback if additionalFields were not populated by the session store
+    // Authoritatively retrieve the user's role and account status directly from PostgreSQL
+    // on every authenticated request so admin-triggered restrictions apply immediately.
     const user = await prisma.user.findUnique({
       where: { id: session.user.id },
       select: {
@@ -70,11 +48,11 @@ export const requireAuth: RequestHandler = asyncHandler(
     };
     setRequestContextUser(user.id, user.role);
     logger.debug(
-      { userId: user.id, role: user.role },
-      "auth.session_authenticated_from_db"
+      { userId: user.id, role: user.role, status: user.status },
+      "auth.session_authenticated"
     );
 
-    next();
+    return next();
   }
 );
 
