@@ -29,6 +29,14 @@ import {
   scheduleReportDelivery,
 } from "./reportDelivery.service.js";
 
+export type AssessmentStatus =
+  | "ASSESSED"
+  | "PARTIALLY_ASSESSED"
+  | "SKIPPED"
+  | "UNASSESSED"
+  | "INCOMPLETE"
+  | "ABANDONED";
+
 /**
  * Helper to compute the authoritative progression stage from a session and its completed attempts.
  * Progression is strictly contiguous (Game 1 L1 -> L2 -> L3 -> Game 2 L1 -> ... -> Game 6 L3).
@@ -1517,6 +1525,7 @@ export async function generateOrGetReport(
       currentGame: true,
       currentLevel: true,
       startedAt: true,
+      lastActivityAt: true,
       completedAt: true,
       childProfileId: true,
       childProfile: {
@@ -1532,7 +1541,6 @@ export async function generateOrGetReport(
         select: { answers: true },
       },
       levelAttempts: {
-        where: { status: { in: ["COMPLETED", "SKIPPED"] } },
         orderBy: [
           { gameId: "asc" },
           { levelNumber: "asc" },
@@ -1551,6 +1559,7 @@ export async function generateOrGetReport(
           durationMs: true,
           averageReactionTimeMs: true,
           metrics: true,
+          startedAt: true,
           completedAt: true,
         },
       },
@@ -1648,6 +1657,98 @@ export async function generateOrGetReport(
         ) / 10
       : 0;
 
+  // Distinguish wall-clock session duration from active gameplay duration
+  const wallClockDurationMs = session.completedAt
+    ? session.completedAt.getTime() - session.startedAt.getTime()
+    : session.lastActivityAt
+      ? session.lastActivityAt.getTime() - session.startedAt.getTime()
+      : totalDurationMs;
+
+  const sessionDurationMinutes = Math.max(
+    1,
+    Math.round((wallClockDurationMs > 0 ? wallClockDurationMs : totalDurationMs) / 60000)
+  );
+
+  const isProlongedSession =
+    (wallClockDurationMs > 0 ? wallClockDurationMs : totalDurationMs) >= 40 * 60 * 1000;
+
+  // Determine chronological order of games from actual attempt timestamps
+  const attemptedGameKeys: string[] = [];
+  const gameTimestamps: Record<string, { first: number | null; last: number | null }> = {};
+  const gameActiveDurations: Record<string, number> = {};
+
+  for (let g = 1; g <= 6; g++) {
+    const key = GAME_ID_TO_KEY[g] as string;
+    const attemptsForGame = session.levelAttempts.filter(
+      (a) => a.gameId === g || a.gameKey === key
+    );
+    if (attemptsForGame.length > 0) {
+      attemptedGameKeys.push(key);
+      const times = attemptsForGame
+        .map((a) => {
+          const s = a.startedAt ? new Date(a.startedAt).getTime() : null;
+          const c = a.completedAt ? new Date(a.completedAt).getTime() : null;
+          return { start: s ?? c, end: c ?? s };
+        })
+        .filter((t): t is { start: number; end: number } => t.start !== null || t.end !== null);
+
+      gameTimestamps[key] = {
+        first: times.length > 0 ? Math.min(...times.map((t) => t.start)) : null,
+        last: times.length > 0 ? Math.max(...times.map((t) => t.end)) : null,
+      };
+
+      gameActiveDurations[key] = attemptsForGame.reduce(
+        (sum, a) => sum + (typeof a.durationMs === "number" ? a.durationMs : 0),
+        0
+      );
+    }
+  }
+
+  // Sort attempted games chronologically by their first attempt timestamp.
+  // Ties or missing timestamps safely fall back to encounter order in session.levelAttempts.
+  const sortedAttemptedGameKeys = [...attemptedGameKeys].sort((aKey, bKey) => {
+    const timeA = gameTimestamps[aKey]?.first;
+    const timeB = gameTimestamps[bKey]?.first;
+    if (timeA !== null && timeA !== undefined && timeB !== null && timeB !== undefined) {
+      if (timeA !== timeB) return timeA - timeB;
+    }
+    if (timeA && !timeB) return -1;
+    if (!timeA && timeB) return 1;
+
+    const idxA = session.levelAttempts.findIndex((a) => a.gameKey === aKey || GAME_ID_TO_KEY[a.gameId] === aKey);
+    const idxB = session.levelAttempts.findIndex((a) => a.gameKey === bKey || GAME_ID_TO_KEY[a.gameId] === bKey);
+    return idxA - idxB;
+  });
+
+  const gameChronologyMeta: Record<
+    string,
+    {
+      playOrder: number | null;
+      isFirstGame: boolean;
+      isLastGame: boolean;
+      firstAttemptAt: string | null;
+      lastAttemptAt: string | null;
+      activeDurationMs: number;
+    }
+  > = {};
+
+  for (let idx = 0; idx < sortedAttemptedGameKeys.length; idx++) {
+    const key = sortedAttemptedGameKeys[idx];
+    if (!key) continue;
+    const isFirst = idx === 0;
+    const isLast = idx === sortedAttemptedGameKeys.length - 1;
+    const firstT = gameTimestamps[key]?.first;
+    const lastT = gameTimestamps[key]?.last;
+    gameChronologyMeta[key] = {
+      playOrder: idx + 1,
+      isFirstGame: isFirst,
+      isLastGame: isLast,
+      firstAttemptAt: firstT ? new Date(firstT).toISOString() : null,
+      lastAttemptAt: lastT ? new Date(lastT).toISOString() : null,
+      activeDurationMs: gameActiveDurations[key] || 0,
+    };
+  }
+
   const gameSummaries: Record<string, any> = {};
   for (let g = 1; g <= 6; g++) {
     const key = GAME_ID_TO_KEY[g] as string;
@@ -1689,36 +1790,133 @@ export async function generateOrGetReport(
       avgRT = totalWeight > 0 ? Math.round(weightedSum / totalWeight) : null;
     }
 
-    // Determine game status
-    const allSessionAttemptsForGame = session.levelAttempts.filter((a) => a.gameId === g);
+    // Authoritative assessment-status determination
+    const allSessionAttemptsForGame = session.levelAttempts.filter(
+      (a) => a.gameId === g || a.gameKey === key
+    );
+
     const hasSkippedAttempt = allSessionAttemptsForGame.some(
       (a) =>
         a.status === "SKIPPED" ||
-        Boolean((a.metrics as any)?.isSkipped || (a.metrics as any)?.skippedViaTiredPrompt)
+        Boolean(
+          (a.metrics as any)?.isSkipped ||
+          (a.metrics as any)?.skippedViaTiredPrompt ||
+          (a.metrics as any)?.skipped
+        )
     );
 
-    let gameStatus: "COMPLETED" | "SKIPPED" | "IN_PROGRESS" | "NOT_ATTEMPTED";
-    if (levelsCompleted === 3) {
-      gameStatus = "COMPLETED";
+    const hasAbandonedAttempt = allSessionAttemptsForGame.some(
+      (a) => a.status === "ABANDONED"
+    );
+
+    let assessmentStatus: AssessmentStatus;
+    if (allSessionAttemptsForGame.length === 0) {
+      assessmentStatus = "UNASSESSED";
+    } else if (levelsCompleted === 3) {
+      assessmentStatus = "ASSESSED";
+    } else if (levelsCompleted > 0 && levelsCompleted < 3) {
+      assessmentStatus = "PARTIALLY_ASSESSED";
     } else if (hasSkippedAttempt) {
-      gameStatus = "SKIPPED";
-    } else if (session.status === "COMPLETED" && levelsCompleted === 0) {
-      gameStatus = "SKIPPED";
-    } else if (levelsCompleted > 0) {
-      gameStatus = session.status === "COMPLETED" ? "COMPLETED" : "IN_PROGRESS";
+      assessmentStatus = "SKIPPED";
+    } else if (hasAbandonedAttempt) {
+      assessmentStatus = "ABANDONED";
+    } else if (allSessionAttemptsForGame.length > 0) {
+      assessmentStatus = "INCOMPLETE";
     } else {
-      gameStatus = "NOT_ATTEMPTED";
+      assessmentStatus = "UNASSESSED";
     }
+
+    // Preserve backward compatibility for consumers expecting legacy gameStatus
+    let gameStatus: "COMPLETED" | "SKIPPED" | "IN_PROGRESS" | "NOT_ATTEMPTED" | "UNASSESSED" | "ABANDONED";
+    switch (assessmentStatus) {
+      case "ASSESSED":
+        gameStatus = "COMPLETED";
+        break;
+      case "PARTIALLY_ASSESSED":
+        gameStatus = "IN_PROGRESS";
+        break;
+      case "SKIPPED":
+        gameStatus = "SKIPPED";
+        break;
+      case "UNASSESSED":
+        gameStatus = "UNASSESSED";
+        break;
+      case "INCOMPLETE":
+        gameStatus = "IN_PROGRESS";
+        break;
+      case "ABANDONED":
+        gameStatus = "ABANDONED";
+        break;
+      default:
+        gameStatus = "NOT_ATTEMPTED";
+    }
+
+    // Scores and reaction times are preserved for ASSESSED and PARTIALLY_ASSESSED
+    const hasValidScores =
+      assessmentStatus === "ASSESSED" || assessmentStatus === "PARTIALLY_ASSESSED";
+
+    const meta = gameChronologyMeta[key];
 
     gameSummaries[key] = {
       gameId: g,
       gameKey: key,
       gameStatus,
+      assessmentStatus,
       levelsCompleted,
-      averageAccuracy: hasSkippedAttempt && levelsCompleted === 0 ? null : avgGameAcc,
-      averageReactionTimeMs: hasSkippedAttempt && levelsCompleted === 0 ? null : avgRT,
+      averageAccuracy: hasValidScores ? avgGameAcc : null,
+      averageReactionTimeMs: hasValidScores ? avgRT : null,
+      playOrder: meta?.playOrder ?? null,
+      isFirstGame: Boolean(meta?.isFirstGame),
+      isLastGame: Boolean(meta?.isLastGame),
+      firstAttemptAt: meta?.firstAttemptAt ?? null,
+      lastAttemptAt: meta?.lastAttemptAt ?? null,
+      activeDurationMs: meta?.activeDurationMs ?? 0,
     };
   }
+
+  const firstGameKey = sortedAttemptedGameKeys[0];
+  const lastGameKey = sortedAttemptedGameKeys[sortedAttemptedGameKeys.length - 1];
+  const lastGameSummary = lastGameKey ? gameSummaries[lastGameKey] : null;
+
+  const earlierAssessedSummaries = sortedAttemptedGameKeys
+    .slice(0, -1)
+    .map((k) => gameSummaries[k])
+    .filter(
+      (g) =>
+        g &&
+        (g.assessmentStatus === "ASSESSED" || g.assessmentStatus === "PARTIALLY_ASSESSED") &&
+        typeof g.averageAccuracy === "number"
+    );
+
+  const earlierAvgAccuracy =
+    earlierAssessedSummaries.length > 0
+      ? Math.round(
+          earlierAssessedSummaries.reduce((s, g) => s + g.averageAccuracy, 0) /
+            earlierAssessedSummaries.length
+        )
+      : null;
+
+  const lastGameAccuracy =
+    lastGameSummary &&
+    (lastGameSummary.assessmentStatus === "ASSESSED" ||
+      lastGameSummary.assessmentStatus === "PARTIALLY_ASSESSED")
+      ? lastGameSummary.averageAccuracy
+      : null;
+
+  const isLateGameFatigueContext = Boolean(
+    isProlongedSession &&
+      earlierAvgAccuracy !== null &&
+      earlierAvgAccuracy >= 75 &&
+      lastGameAccuracy !== null &&
+      (earlierAvgAccuracy - lastGameAccuracy >= 20 || lastGameAccuracy < 65)
+  );
+
+  const isLateGameExitContext = Boolean(
+    isProlongedSession &&
+      lastGameSummary &&
+      (lastGameSummary.assessmentStatus === "SKIPPED" ||
+        lastGameSummary.assessmentStatus === "ABANDONED")
+  );
 
   const warmUpAnswers =
     (session.warmUpSubmission?.answers as Record<string, string>) || {};
@@ -1727,12 +1925,23 @@ export async function generateOrGetReport(
   const favoriteSubject = warmUpAnswers["4"] || null;
   const emotionalState = warmUpAnswers["6"] || null;
 
-  const summaryNote =
-    overallAccuracy >= 85
-      ? `Demonstrated outstanding focus and accuracy (${overallAccuracy}%) with consistent performance across evaluated cognitive challenges.`
-      : overallAccuracy >= 60
-        ? `Demonstrated steady focus, positive persistence, and an adaptable problem-solving approach (${overallAccuracy}% accuracy) throughout the cognitive exploration journey.`
-        : `Engaged actively across levels, showing notable persistence while working through challenging tasks (${overallAccuracy}% accuracy).`;
+  let summaryNote: string;
+  if (isLateGameFatigueContext && lastGameSummary) {
+    summaryNote = `The session involved a considerable amount of time (~${sessionDurationMinutes} minutes). Earlier activities showed solid engagement (${earlierAvgAccuracy}% average accuracy), while natural fluctuations in energy, sustained cognitive effort, or tiredness may have influenced performance on later activities. This variation is completely normal during an extended session.`;
+  } else if (isLateGameExitContext && lastGameSummary) {
+    const lastGameName = CANONICAL_GAMES.find((cg) => cg.key === lastGameKey)?.name || "the final activity";
+    summaryNote = `The session involved a considerable amount of time (~${sessionDurationMinutes} minutes). After engaging actively in earlier challenges, the session concluded with ${lastGameName} being ${
+      lastGameSummary.assessmentStatus === "SKIPPED" ? "skipped" : "not completed"
+    }, which is completely natural when an exploration becomes lengthy.`;
+  } else if (isProlongedSession && overallAccuracy >= 75) {
+    summaryNote = `Demonstrated remarkable focus, stamina, and consistency (${overallAccuracy}% accuracy) throughout an extended exploratory session (~${sessionDurationMinutes} minutes).`;
+  } else if (overallAccuracy >= 85) {
+    summaryNote = `Demonstrated outstanding focus and accuracy (${overallAccuracy}%) with consistent performance across evaluated cognitive challenges.`;
+  } else if (overallAccuracy >= 60) {
+    summaryNote = `Demonstrated steady focus, positive persistence, and an adaptable problem-solving approach (${overallAccuracy}% accuracy) throughout the cognitive exploration journey.`;
+  } else {
+    summaryNote = `Engaged actively across levels, showing notable persistence while working through challenging tasks (${overallAccuracy}% accuracy).`;
+  }
 
   const growthObservations = {
     copingStrategy,
@@ -1749,34 +1958,64 @@ export async function generateOrGetReport(
   const cognitiveFacets = {
     focusInhibition: {
       name: "Staying Focused (Focus & Impulse Control)",
-      score: gameSummaries["stroop"]?.gameStatus === "SKIPPED" ? null : gameSummaries["stroop"]?.averageAccuracy ?? null,
+      score:
+        gameSummaries["stroop"]?.assessmentStatus === "ASSESSED" ||
+        gameSummaries["stroop"]?.assessmentStatus === "PARTIALLY_ASSESSED"
+          ? gameSummaries["stroop"]?.averageAccuracy ?? null
+          : null,
       domain: "Staying focused and ignoring distractions (Stroop colour-word task)",
+      assessmentStatus: gameSummaries["stroop"]?.assessmentStatus ?? "UNASSESSED",
     },
     workingMemory: {
       name: "Remembering Pictures (Visual Memory)",
-      score: gameSummaries["card-flip"]?.gameStatus === "SKIPPED" ? null : gameSummaries["card-flip"]?.averageAccuracy ?? null,
+      score:
+        gameSummaries["card-flip"]?.assessmentStatus === "ASSESSED" ||
+        gameSummaries["card-flip"]?.assessmentStatus === "PARTIALLY_ASSESSED"
+          ? gameSummaries["card-flip"]?.averageAccuracy ?? null
+          : null,
       domain:
         "Remembering pictures and where cards hide (Card flip memory match)",
+      assessmentStatus: gameSummaries["card-flip"]?.assessmentStatus ?? "UNASSESSED",
     },
     patternReasoning: {
       name: "Finding Patterns (Pattern Recognition)",
-      score: gameSummaries["pattern"]?.gameStatus === "SKIPPED" ? null : gameSummaries["pattern"]?.averageAccuracy ?? null,
+      score:
+        gameSummaries["pattern"]?.assessmentStatus === "ASSESSED" ||
+        gameSummaries["pattern"]?.assessmentStatus === "PARTIALLY_ASSESSED"
+          ? gameSummaries["pattern"]?.averageAccuracy ?? null
+          : null,
       domain: "Spotting sequence rules and working out what comes next (Pattern recognition)",
+      assessmentStatus: gameSummaries["pattern"]?.assessmentStatus ?? "UNASSESSED",
     },
     visualDiscrimination: {
       name: "Spotting Differences (Visual Attention)",
-      score: gameSummaries["odd-one-out"]?.gameStatus === "SKIPPED" ? null : gameSummaries["odd-one-out"]?.averageAccuracy ?? null,
+      score:
+        gameSummaries["odd-one-out"]?.assessmentStatus === "ASSESSED" ||
+        gameSummaries["odd-one-out"]?.assessmentStatus === "PARTIALLY_ASSESSED"
+          ? gameSummaries["odd-one-out"]?.averageAccuracy ?? null
+          : null,
       domain: "Looking closely and spotting differences between objects (Odd one out)",
+      assessmentStatus: gameSummaries["odd-one-out"]?.assessmentStatus ?? "UNASSESSED",
     },
     conceptualFlexibility: {
       name: "Trying New Rules (Mental Flexibility)",
-      score: gameSummaries["rule-discovery"]?.gameStatus === "SKIPPED" ? null : gameSummaries["rule-discovery"]?.averageAccuracy ?? null,
+      score:
+        gameSummaries["rule-discovery"]?.assessmentStatus === "ASSESSED" ||
+        gameSummaries["rule-discovery"]?.assessmentStatus === "PARTIALLY_ASSESSED"
+          ? gameSummaries["rule-discovery"]?.averageAccuracy ?? null
+          : null,
       domain: "Trying new ideas and adapting when sorting rules shift (Rule discovery)",
+      assessmentStatus: gameSummaries["rule-discovery"]?.assessmentStatus ?? "UNASSESSED",
     },
     temporalSequencing: {
       name: "Remembering Story Order (Story Sequencing)",
-      score: gameSummaries["story-sequencing"]?.gameStatus === "SKIPPED" ? null : gameSummaries["story-sequencing"]?.averageAccuracy ?? null,
+      score:
+        gameSummaries["story-sequencing"]?.assessmentStatus === "ASSESSED" ||
+        gameSummaries["story-sequencing"]?.assessmentStatus === "PARTIALLY_ASSESSED"
+          ? gameSummaries["story-sequencing"]?.averageAccuracy ?? null
+          : null,
       domain: "Arranging story cards in clear beginning-middle-end order (Story sequencing)",
+      assessmentStatus: gameSummaries["story-sequencing"]?.assessmentStatus ?? "UNASSESSED",
     },
   };
 
@@ -1784,7 +2023,8 @@ export async function generateOrGetReport(
   const gamesPayload = CANONICAL_GAMES.map((cg) => {
     const summary = gameSummaries[cg.key] || {
       levelsCompleted: 0,
-      gameStatus: "NOT_ATTEMPTED",
+      gameStatus: "UNASSESSED",
+      assessmentStatus: "UNASSESSED",
       averageAccuracy: null,
       averageReactionTimeMs: null,
     };
@@ -1794,24 +2034,55 @@ export async function generateOrGetReport(
       gameName: cg.name,
       domain: cg.domain,
       gameStatus: summary.gameStatus,
+      assessmentStatus: summary.assessmentStatus,
       levelsCompleted: summary.levelsCompleted,
       averageAccuracy: summary.averageAccuracy,
       averageReactionTimeMs: summary.averageReactionTimeMs,
+      playOrder: summary.playOrder ?? null,
+      isFirstGame: Boolean(summary.isFirstGame),
+      isLastGame: Boolean(summary.isLastGame),
+      firstAttemptAt: summary.firstAttemptAt ?? null,
+      lastAttemptAt: summary.lastAttemptAt ?? null,
+      activeDurationMs: summary.activeDurationMs ?? 0,
       levels: [1, 2, 3].map((lvl) => {
         const att = session.levelAttempts.find(
-          (a) => a.gameId === cg.id && a.levelNumber === lvl
+          (a) => (a.gameId === cg.id || a.gameKey === cg.key) && a.levelNumber === lvl
         );
-        const isLvlSkipped = att?.status === "SKIPPED" || (summary.gameStatus === "SKIPPED" && !att);
-        const lvlStatus = isLvlSkipped ? "SKIPPED" : att ? "COMPLETED" : "NOT_COMPLETED";
+        const isLvlSkipped =
+          att?.status === "SKIPPED" ||
+          Boolean(
+            (att?.metrics as any)?.isSkipped ||
+            (att?.metrics as any)?.skippedViaTiredPrompt ||
+            (att?.metrics as any)?.skipped
+          ) ||
+          (summary.assessmentStatus === "SKIPPED" && !att);
+        const isLvlAbandoned = att?.status === "ABANDONED";
+        let lvlStatus: string;
+        if (att?.status === "COMPLETED") lvlStatus = "COMPLETED";
+        else if (isLvlSkipped) lvlStatus = "SKIPPED";
+        else if (isLvlAbandoned) lvlStatus = "ABANDONED";
+        else if (att?.status === "IN_PROGRESS") lvlStatus = "IN_PROGRESS";
+        else if (summary.assessmentStatus === "UNASSESSED") lvlStatus = "UNASSESSED";
+        else lvlStatus = "NOT_COMPLETED";
+
+        const hasValidTrials =
+          lvlStatus === "COMPLETED" &&
+          typeof att?.totalTrials === "number" &&
+          att.totalTrials > 0;
+
         return {
           levelNumber: lvl,
           attemptNumber: att?.attemptNumber || 1,
           status: lvlStatus,
-          totalTrials: isLvlSkipped ? null : (att?.totalTrials ?? null),
-          correctTrials: isLvlSkipped ? null : (att?.correctTrials ?? null),
-          accuracy: isLvlSkipped ? null : (att?.accuracy ?? null),
+          totalTrials: hasValidTrials ? (att?.totalTrials ?? null) : null,
+          correctTrials: hasValidTrials ? (att?.correctTrials ?? null) : null,
+          accuracy: hasValidTrials ? (att?.accuracy ?? null) : null,
           durationMs: att?.durationMs ?? null,
-          averageReactionTimeMs: isLvlSkipped ? null : (att?.averageReactionTimeMs ?? null),
+          averageReactionTimeMs: hasValidTrials
+            ? (att?.averageReactionTimeMs ?? null)
+            : null,
+          startedAt: att?.startedAt ? att.startedAt.toISOString() : null,
+          completedAt: att?.completedAt ? att.completedAt.toISOString() : null,
         };
       }),
     };
@@ -1832,7 +2103,11 @@ export async function generateOrGetReport(
         : null,
       totalLevelsCompleted,
       overallAccuracy,
-      totalDurationMs,
+      totalDurationMs: wallClockDurationMs > 0 ? wallClockDurationMs : totalDurationMs,
+      activeGameplayDurationMs: totalDurationMs,
+      hasBreaks: wallClockDurationMs - totalDurationMs >= 15 * 60 * 1000,
+      sessionDurationMinutes,
+      isProlongedSession,
     },
     warmUp: {
       copingStrategy: copingStrategy || "retry",
@@ -1841,6 +2116,33 @@ export async function generateOrGetReport(
       emotionalState: emotionalState || "happy",
     },
     games: gamesPayload,
+    chronology: {
+      gameplayOrder: sortedAttemptedGameKeys.map((key) => {
+        const cg = CANONICAL_GAMES.find((c) => c.key === key)!;
+        const meta = gameChronologyMeta[key];
+        const s = gameSummaries[key];
+        return {
+          gameKey: key,
+          gameName: cg?.name || key,
+          playOrder: meta?.playOrder || 1,
+          assessmentStatus: s?.assessmentStatus || "UNASSESSED",
+          averageAccuracy: s?.averageAccuracy ?? null,
+          activeDurationMs: s?.activeDurationMs ?? 0,
+          firstAttemptAt: meta?.firstAttemptAt ?? null,
+          lastAttemptAt: meta?.lastAttemptAt ?? null,
+        };
+      }),
+      firstGamePlayed: firstGameKey
+        ? CANONICAL_GAMES.find((c) => c.key === firstGameKey)?.name ?? firstGameKey
+        : null,
+      lastGamePlayed: lastGameKey
+        ? CANONICAL_GAMES.find((c) => c.key === lastGameKey)?.name ?? lastGameKey
+        : null,
+      wallClockDurationMinutes: sessionDurationMinutes,
+      activeGameplayDurationMinutes: Math.round(totalDurationMs / 60000),
+      isLateGameFatigueContext,
+      isLateGameExitContext,
+    },
   };
 
   // Call OpenAI (or fallback)
@@ -1855,7 +2157,7 @@ export async function generateOrGetReport(
     selectedClass,
     school,
     overallAccuracy,
-    totalDurationMs,
+    totalDurationMs: wallClockDurationMs > 0 ? wallClockDurationMs : totalDurationMs,
     gameSummaries,
     cognitiveFacets,
     growthObservations,

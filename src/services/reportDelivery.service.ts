@@ -6,6 +6,7 @@ import { CANONICAL_GAMES } from "../config/games.js";
 import { AppError, ConflictError, NotFoundError, TooManyRequestsError } from "../utils/errors.js";
 import { generateRuleBasedReport, type AiStructuredReport } from "./aiReport.service.js";
 import { generateReportPdf } from "./pdfReport.service.js";
+import { formatChildName } from "../lib/formatChildName.js";
 import * as r2 from "../lib/r2.js";
 import { sendReportReadyEmail, EmailSendError } from "../lib/email.js";
 
@@ -22,7 +23,7 @@ export type DeliveryReason = "CREATED" | "REGENERATED" | "RESEND";
  * External dependencies, overridable in tests so tests never touch R2/Resend.
  */
 export const deliveryDeps = {
-  isEnabled: () => reportDelivery.enabled,
+  isEnabled: () => reportDelivery.enabled && process.env.SKIP_REPORT_DELIVERY !== "true",
   uploadPdf: r2.uploadPdf,
   getPdf: r2.getPdf,
   deletePdfs: r2.deletePdfs,
@@ -75,24 +76,51 @@ export async function renderReportPdf(report: ReportWithSession): Promise<Uint8A
       },
       games: CANONICAL_GAMES.map((cg) => {
         const gs = (report.gameSummaries as any)?.[cg.key] || {};
+        const assessmentStatus =
+          gs.assessmentStatus ||
+          (gs.gameStatus === "SKIPPED"
+            ? "SKIPPED"
+            : gs.gameStatus === "UNASSESSED"
+              ? "UNASSESSED"
+              : gs.gameStatus === "PARTIALLY_ASSESSED"
+                ? "PARTIALLY_ASSESSED"
+                : gs.levelsCompleted === 3
+                  ? "ASSESSED"
+                  : gs.levelsCompleted > 0
+                    ? "PARTIALLY_ASSESSED"
+                    : "UNASSESSED");
+        const isAssessed = assessmentStatus === "ASSESSED";
+        const isPartiallyAssessed = assessmentStatus === "PARTIALLY_ASSESSED";
+        const hasScores = isAssessed || isPartiallyAssessed;
         return {
           gameId: cg.id,
           gameKey: cg.key,
           gameName: cg.name,
           domain: cg.domain,
-          levelsCompleted: gs.levelsCompleted ?? 3,
-          averageAccuracy: gs.averageAccuracy ?? null,
-          averageReactionTimeMs: gs.averageReactionTimeMs ?? null,
-          levels: [1, 2, 3].map((lvl) => ({
-            levelNumber: lvl,
-            attemptNumber: 1,
-            status: "COMPLETED",
-            totalTrials: null,
-            correctTrials: null,
-            accuracy: gs.averageAccuracy ?? null,
-            durationMs: null,
-            averageReactionTimeMs: gs.averageReactionTimeMs ?? null,
-          })),
+          gameStatus: gs.gameStatus || (isAssessed ? "COMPLETED" : isPartiallyAssessed ? "IN_PROGRESS" : assessmentStatus),
+          assessmentStatus,
+          levelsCompleted: isAssessed ? (gs.levelsCompleted ?? 3) : (assessmentStatus === "UNASSESSED" ? 0 : (gs.levelsCompleted ?? 0)),
+          averageAccuracy: hasScores ? (gs.averageAccuracy ?? null) : null,
+          averageReactionTimeMs: hasScores ? (gs.averageReactionTimeMs ?? null) : null,
+          levels: [1, 2, 3].map((lvl) => {
+            const isLvlDone = lvl <= (gs.levelsCompleted ?? 0);
+            return {
+              levelNumber: lvl,
+              attemptNumber: 1,
+              status: isLvlDone
+                ? "COMPLETED"
+                : isPartiallyAssessed
+                  ? "NOT_COMPLETED"
+                  : isAssessed
+                    ? "COMPLETED"
+                    : assessmentStatus,
+              totalTrials: null,
+              correctTrials: null,
+              accuracy: isLvlDone ? (gs.averageAccuracy ?? null) : null,
+              durationMs: null,
+              averageReactionTimeMs: isLvlDone ? (gs.averageReactionTimeMs ?? null) : null,
+            };
+          }),
         };
       }),
     });
@@ -121,7 +149,8 @@ async function loadReport(reportId: string): Promise<ReportWithSession | null> {
 }
 
 function pdfFileName(childName: string): string {
-  return `OrionKids-${childName.trim().replace(/\s+/g, "_") || "Child"}-Report.pdf`;
+  const formatted = formatChildName(childName, "Child").replace(/\s+/g, "_");
+  return `OrionKids-${formatted}-Report.pdf`;
 }
 
 /**
@@ -319,7 +348,7 @@ async function runDelivery(reportId: string, reason: DeliveryReason): Promise<vo
         // 3. Email (idempotency key = link id, so a retry never sends twice)
         await deliveryDeps.sendEmail({
           to: recipient,
-          childName: report.childName,
+          childName: formatChildName(report.childName, "Your child"),
           link: shareLink.url,
           expiresAt: shareLink.expiresAt,
           idempotencyKey: `report-email-${shareLink.id}`,

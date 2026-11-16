@@ -25,12 +25,15 @@ const activeConnectionString = isTest
   ? env.DATABASE_URL_TEST!
   : env.DATABASE_URL;
 const isNeonConnection = activeConnectionString.includes("neon.tech");
+const useNeonWebSocket =
+  process.env.USE_NEON_WEBSOCKET === "true" ||
+  process.env.USE_NEON_WEBSOCKET === "1";
 
 let adapter: PrismaNeon | PrismaPg;
 
 let activePool: PgPool | null = null;
 
-if (isNeonConnection) {
+if (useNeonWebSocket && isNeonConnection) {
   adapter = new PrismaNeon(
     {
       connectionString: activeConnectionString,
@@ -51,11 +54,19 @@ if (isNeonConnection) {
     }
   );
 } else {
+  const isSslRequired =
+    activeConnectionString.includes("sslmode=require") ||
+    activeConnectionString.includes("sslmode=verify-full") ||
+    isNeonConnection;
+
   const pgPool = new PgPool({
     connectionString: activeConnectionString,
     max: 20,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10_000,
+    ...(isSslRequired ? { ssl: { rejectUnauthorized: false } } : {}),
   });
   activePool = pgPool;
   pgPool.on("error", (err) => {

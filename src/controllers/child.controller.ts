@@ -20,6 +20,7 @@ import {
   resendChildReportEmail,
 } from "../services/child.service.js";
 import { getReportPdfBuffer } from "../services/quest.service.js";
+import { formatChildName } from "../lib/formatChildName.js";
 
 function getUserId(req: Request): string {
   if (!req.authCtx?.userId) {
@@ -138,9 +139,10 @@ export async function downloadChildSessionReportPdfController(
   const pdfBuffer = await getReportPdfBuffer(userId, sessionId, false);
 
   res.setHeader("Content-Type", "application/pdf");
+  const formattedName = formatChildName(child.childName, "Child").replace(/\s+/g, "_");
   res.setHeader(
     "Content-Disposition",
-    `attachment; filename="OrionKids-${child.childName.replace(/\s+/g, "_")}-Report.pdf"`
+    `attachment; filename="OrionKids-${formattedName}-Report.pdf"`
   );
   res.setHeader("Content-Length", pdfBuffer.byteLength);
   res.status(200).send(Buffer.from(pdfBuffer));

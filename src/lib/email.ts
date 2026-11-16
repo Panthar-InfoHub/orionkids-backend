@@ -1,5 +1,6 @@
 import { Resend } from "resend";
 import { env } from "../config/env.js";
+import { formatChildName } from "./formatChildName.js";
 
 /**
  * Parent "report ready" email, sent through Resend.
@@ -75,7 +76,7 @@ export interface ReportReadyEmailInput {
 }
 
 export function buildReportReadyEmail(input: Omit<ReportReadyEmailInput, "to" | "idempotencyKey">) {
-  const name = input.childName.trim() || "Your child";
+  const name = formatChildName(input.childName, "Your child");
   const safeName = escapeHtml(name);
   const safeLink = escapeHtml(input.link);
   const expiry = formatDate(input.expiresAt);

@@ -113,7 +113,9 @@ const input: GameplayReportInput = {
 
 async function main() {
   const report = generateRuleBasedReport(input);
-  const pdfBytes = await generateReportPdf({
+
+  // 1. Default Knockout Logo PDF
+  const knockoutBytes = await generateReportPdf({
     childName: input.child.childName,
     age: input.child.age,
     selectedClass: input.child.selectedClass,
@@ -123,10 +125,29 @@ async function main() {
     overallAccuracy: input.quest.overallAccuracy,
     totalDurationMs: input.quest.totalDurationMs,
     aiReport: report,
+    logoStyle: "knockout",
   });
 
-  fs.writeFileSync("/home/dev/codes/orionkids-frontend/sample_after.pdf", Buffer.from(pdfBytes));
-  console.log("Wrote /home/dev/codes/orionkids-frontend/sample_after.pdf");
+  fs.writeFileSync("/home/dev/codes/orionkids-frontend/sample_after.pdf", Buffer.from(knockoutBytes));
+  fs.writeFileSync("/tmp/sample_knockout.pdf", Buffer.from(knockoutBytes));
+  console.log("Wrote sample_after.pdf and /tmp/sample_knockout.pdf");
+
+  // 2. White Badge Logo PDF
+  const badgeBytes = await generateReportPdf({
+    childName: input.child.childName,
+    age: input.child.age,
+    selectedClass: input.child.selectedClass,
+    school: input.child.school,
+    questCompletedAt: input.quest.completedAt,
+    reportGeneratedAt: new Date().toISOString(),
+    overallAccuracy: input.quest.overallAccuracy,
+    totalDurationMs: input.quest.totalDurationMs,
+    aiReport: report,
+    logoStyle: "badge",
+  });
+
+  fs.writeFileSync("/tmp/sample_badge.pdf", Buffer.from(badgeBytes));
+  console.log("Wrote /tmp/sample_badge.pdf");
 }
 
 main().catch(console.error);

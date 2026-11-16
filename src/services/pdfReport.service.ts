@@ -8,6 +8,8 @@ import {
   type RGB,
 } from "pdf-lib";
 import { logger } from "../lib/logger.js";
+import { getOrionKidsLogoBytes } from "../lib/brandAssets.js";
+import { formatChildName, formatChildFirstName } from "../lib/formatChildName.js";
 import type {
   AiStructuredReport,
   ObservedStrengthItem,
@@ -25,6 +27,7 @@ export interface PdfReportData {
   overallAccuracy: number;
   totalDurationMs: number;
   aiReport: AiStructuredReport;
+  logoStyle?: "knockout" | "badge";
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +277,7 @@ function drawBellCurve(
   });
 
   // Label above/beside pin: e.g. "Ananya: 82%"
-  const firstName = childName.split(" ")[0] || "Child";
+  const firstName = formatChildFirstName(childName);
   const labelText = `${firstName}: ${Math.round(scorePercent)}%`;
   const labelW = fontBold.widthOfTextAtSize(labelText, 8);
   let labelX = scoreX - labelW / 2;
@@ -558,6 +561,9 @@ function formatHomeActivity(item: any): {
   progression: string;
   opportunity: string;
   tip: string;
+  observedFinding?: string;
+  relatedDomain?: string;
+  relatedGameKey?: string;
 } {
   return {
     title: item.title || "Home Exploration Activity",
@@ -585,6 +591,9 @@ function formatHomeActivity(item: any): {
     tip:
       item.parentTip ||
       "Praise curiosity and creative exploration rather than focusing solely on correct answers.",
+    observedFinding: item.observedFinding || undefined,
+    relatedDomain: item.relatedDomain || undefined,
+    relatedGameKey: item.relatedGameKey || undefined,
   };
 }
 
@@ -602,6 +611,9 @@ export async function generateReportPdf(
   );
 
   try {
+    const displayChildName = formatChildName(data.childName, "Child");
+    const firstName = formatChildFirstName(data.childName, "Your child");
+
     const doc = await PDFDocument.create();
     const fontRegular = await doc.embedFont(StandardFonts.Helvetica);
     const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
@@ -632,7 +644,7 @@ export async function generateReportPdf(
         font: fontRegular,
         color: TEXT_MUTED,
       });
-      const rightText = `${data.childName} · ${data.selectedClass}`;
+      const rightText = `${displayChildName} · ${data.selectedClass}`;
       currentPage.drawText(rightText, {
         x: PAGE_WIDTH - MARGIN - fontBold.widthOfTextAtSize(rightText, 7.5),
         y: y + 12,
@@ -656,35 +668,88 @@ export async function generateReportPdf(
       color: BRAND_NAVY,
     });
 
-    // Left: Sun / Circle Logo & Brand Name
-    currentPage.drawCircle({
-      x: MARGIN + 22,
-      y: y - 28,
-      size: 7,
-      color: BRAND_GOLD,
-    });
+    // Left: Official OrionKids Brand Logo
+    const logoStyle = data.logoStyle || "knockout";
+    try {
+      if (logoStyle === "badge") {
+        // Option B: Full-color brand logo on elevated white rounded plate
+        const logoBytes = await getOrionKidsLogoBytes("color");
+        const logoImg = await doc.embedPng(logoBytes);
+        const bLogoH = 34;
+        const bLogoW = bLogoH * (1190 / 631);
+        const badgePadX = 8;
+        const badgePadY = 4;
+        const badgeW = bLogoW + badgePadX * 2;
+        const badgeH = bLogoH + badgePadY * 2;
+        const badgeX = MARGIN + 14;
+        const badgeCenterY = y - headerHeight / 2;
+        const badgeTopY = badgeCenterY + badgeH / 2;
 
-    currentPage.drawText("ORIONKIDS", {
-      x: MARGIN + 36,
-      y: y - 24,
-      size: 16,
-      font: fontBold,
-      color: WHITE,
-    });
+        drawRoundedRect(currentPage, {
+          x: badgeX,
+          y: badgeTopY - badgeH,
+          width: badgeW,
+          height: badgeH,
+          radius: 8,
+          color: WHITE,
+        });
 
-    currentPage.drawText("Where Every Kid Is a Star", {
-      x: MARGIN + 36,
-      y: y - 40,
-      size: 8.5,
-      font: fontRegular,
-      color: rgb(203 / 255, 213 / 255, 225 / 255),
-    });
+        currentPage.drawImage(logoImg, {
+          x: badgeX + badgePadX,
+          y: badgeCenterY - bLogoH / 2,
+          width: bLogoW,
+          height: bLogoH,
+        });
+      } else {
+        // Option A (Default): High-resolution knockout white & gold logo directly on dark navy banner
+        const logoBytes = await getOrionKidsLogoBytes("white");
+        const logoImg = await doc.embedPng(logoBytes);
+        const logoH = 40;
+        const logoW = logoH * (1190 / 631);
+        const logoX = MARGIN + 18;
+        const logoY = y - headerHeight / 2 - logoH / 2;
+
+        currentPage.drawImage(logoImg, {
+          x: logoX,
+          y: logoY,
+          width: logoW,
+          height: logoH,
+        });
+      }
+    } catch (logoErr) {
+      logger.warn(
+        { err: logoErr },
+        "Failed to embed OrionKids logo in PDF report header, using fallback typography"
+      );
+      currentPage.drawCircle({
+        x: MARGIN + 22,
+        y: y - 28,
+        size: 7,
+        color: BRAND_GOLD,
+      });
+
+      currentPage.drawText("ORIONKIDS", {
+        x: MARGIN + 36,
+        y: y - 24,
+        size: 16,
+        font: fontBold,
+        color: WHITE,
+      });
+
+      currentPage.drawText("Where Every Kid Is a Star", {
+        x: MARGIN + 36,
+        y: y - 40,
+        size: 8.5,
+        font: fontRegular,
+        color: rgb(203 / 255, 213 / 255, 225 / 255),
+      });
+    }
 
     // Right: Document Title & Subtitle
     const titleRight1 = "Thinking Skills Report";
     currentPage.drawText(titleRight1, {
       x: PAGE_WIDTH - MARGIN - 18 - fontBold.widthOfTextAtSize(titleRight1, 13),
-      y: y - 24,
+      y: y - 27,
       size: 13,
       font: fontBold,
       color: WHITE,
@@ -697,7 +762,7 @@ export async function generateReportPdf(
         MARGIN -
         18 -
         fontRegular.widthOfTextAtSize(titleRight2, 8.5),
-      y: y - 40,
+      y: y - 43,
       size: 8.5,
       font: fontRegular,
       color: rgb(203 / 255, 213 / 255, 225 / 255),
@@ -740,14 +805,14 @@ export async function generateReportPdf(
       color: BRAND_NAVY,
     });
     metaX += fontBold.widthOfTextAtSize("Child ", 8.5);
-    currentPage.drawText(data.childName, {
+    currentPage.drawText(displayChildName, {
       x: metaX,
       y: metaY,
       size: 8.5,
       font: fontRegular,
       color: BRAND_NAVY,
     });
-    metaX += fontRegular.widthOfTextAtSize(data.childName, 8.5) + 32;
+    metaX += fontRegular.widthOfTextAtSize(displayChildName, 8.5) + 32;
 
     // Item 2: Class
     currentPage.drawText("Class", {
@@ -808,7 +873,6 @@ export async function generateReportPdf(
     // =========================================================================
     // "ABOUT THIS REPORT" CARD
     // =========================================================================
-    const firstName = data.childName.split(" ")[0] || "Your child";
     const aboutIntroText = `${firstName} played six short games that look at how children focus, remember, reason and plan. This report shows where ${firstName} shines, where thinking skills are still growing, and simple ways family, school and community can help. It reflects one play session and is not a diagnosis or a label.`;
 
     const aboutLines = wrapText(aboutIntroText, fontRegular, 8.5, CONTENT_WIDTH - 24);
@@ -906,7 +970,7 @@ export async function generateReportPdf(
       width: curveWidth,
       height: curveHeight,
       scorePercent: overallScore,
-      childName: data.childName,
+      childName: displayChildName,
     });
 
     y -= 88;
@@ -1041,10 +1105,30 @@ export async function generateReportPdf(
       checkPageBreak(26);
 
       const clampedLevels = Math.min(3, Math.max(0, g.levelsCompleted));
-      const isSkipped =
-        g.gameStatus === "SKIPPED" ||
-        (clampedLevels < 3 && g.averageAccuracy === null);
-      const isNotAttempted = clampedLevels === 0 && !isSkipped;
+      const assessmentStatus =
+        (g as any).assessmentStatus ||
+        (g.gameStatus === "SKIPPED"
+          ? "SKIPPED"
+          : g.gameStatus === "UNASSESSED"
+            ? "UNASSESSED"
+            : g.gameStatus === "ABANDONED"
+              ? "ABANDONED"
+              : g.gameStatus === "PARTIALLY_ASSESSED"
+                ? "PARTIALLY_ASSESSED"
+                : clampedLevels === 3 && g.averageAccuracy !== null
+                  ? "ASSESSED"
+                  : clampedLevels > 0
+                    ? "PARTIALLY_ASSESSED"
+                    : clampedLevels === 0
+                      ? "UNASSESSED"
+                      : "INCOMPLETE");
+
+      const isAssessed = assessmentStatus === "ASSESSED";
+      const isPartiallyAssessed = assessmentStatus === "PARTIALLY_ASSESSED";
+      const isSkipped = assessmentStatus === "SKIPPED";
+      const isUnassessed = assessmentStatus === "UNASSESSED";
+      const isAbandoned = assessmentStatus === "ABANDONED";
+      const isIncomplete = assessmentStatus === "INCOMPLETE";
 
       const isEven = i % 2 === 0;
       currentPage.drawRectangle({
@@ -1077,11 +1161,20 @@ export async function generateReportPdf(
       // Status Column
       let statusStr = "Completed";
       let statusColor = BRAND_GREEN;
-      if (isSkipped) {
+      if (isUnassessed) {
+        statusStr = "Not Assessed";
+        statusColor = TEXT_MUTED;
+      } else if (isPartiallyAssessed) {
+        statusStr = "Partially Assessed";
+        statusColor = rgb(217 / 255, 119 / 255, 6 / 255); // amber
+      } else if (isSkipped) {
         statusStr = "Skipped by child";
         statusColor = rgb(217 / 255, 119 / 255, 6 / 255); // amber
-      } else if (isNotAttempted) {
-        statusStr = "Not Attempted";
+      } else if (isAbandoned) {
+        statusStr = "Abandoned";
+        statusColor = TEXT_MUTED;
+      } else if (isIncomplete) {
+        statusStr = "Incomplete";
         statusColor = TEXT_MUTED;
       }
 
@@ -1094,9 +1187,13 @@ export async function generateReportPdf(
       });
 
       // Levels Column
-      const levelsStr = isSkipped
-        ? `${clampedLevels}/3 (Skipped)`
-        : `${clampedLevels}/3 Levels`;
+      const levelsStr = isUnassessed
+        ? "0/3 (Not Assessed)"
+        : isPartiallyAssessed
+          ? `${clampedLevels}/3 (Partial)`
+          : isSkipped
+            ? `${clampedLevels}/3 (Skipped)`
+            : `${clampedLevels}/3 Levels`;
       currentPage.drawText(levelsStr, {
         x: MARGIN + 295,
         y: y - 14,
@@ -1107,7 +1204,7 @@ export async function generateReportPdf(
 
       // Accuracy Column
       const accStr =
-        !isSkipped && g.averageAccuracy !== null
+        (isAssessed || isPartiallyAssessed) && g.averageAccuracy !== null
           ? `${Math.round(g.averageAccuracy)}%`
           : "—";
       currentPage.drawText(accStr, {
@@ -1120,7 +1217,7 @@ export async function generateReportPdf(
 
       // Avg Pace Column
       const paceStr =
-        !isSkipped &&
+        (isAssessed || isPartiallyAssessed) &&
         typeof g.averageReactionTimeMs === "number" &&
         g.averageReactionTimeMs > 0
           ? `${(g.averageReactionTimeMs / 1000).toFixed(1)}s`
@@ -1138,14 +1235,89 @@ export async function generateReportPdf(
 
     y -= 8;
 
+    // Dedicated note for unassessed games (e.g. Card Flip)
+    const unassessedGames = gamesList.filter(
+      (g) => (g as any).assessmentStatus === "UNASSESSED" || g.gameStatus === "UNASSESSED"
+    );
+    for (const ug of unassessedGames) {
+      const calloutText =
+        ug.gameKey === "card-flip"
+          ? `Activity Note: Cosmic Card Flip was not assessed during this quest session, so visual working memory was not evaluated. This does not indicate any difficulty or memory weakness. We recommend providing a fun, relaxed opportunity to play Cosmic Card Flip in a future session.`
+          : `Activity Note: ${ug.gameName} was not assessed during this quest session. This does not indicate any difficulty or cognitive weakness.`;
+      const noteLines = wrapText(calloutText, fontRegular, 7.5, CONTENT_WIDTH - 24);
+      const calloutH = noteLines.length * 10 + 10;
+      checkPageBreak(calloutH + 4);
+
+      currentPage.drawRectangle({
+        x: MARGIN,
+        y: y - calloutH,
+        width: CONTENT_WIDTH,
+        height: calloutH,
+        color: rgb(241 / 255, 245 / 255, 249 / 255), // slate-100
+        borderColor: rgb(203 / 255, 213 / 255, 225 / 255), // slate-300
+        borderWidth: 0.5,
+      });
+
+      let noteY = y - 9;
+      for (const line of noteLines) {
+        currentPage.drawText(line, {
+          x: MARGIN + 12,
+          y: noteY,
+          size: 7.5,
+          font: fontRegular,
+          color: rgb(71 / 255, 85 / 255, 105 / 255), // slate-600
+        });
+        noteY -= 10;
+      }
+      y -= calloutH + 6;
+    }
+
     // Dedicated note for skipped games
     const skippedGames = gamesList.filter(
       (g) =>
-        g.gameStatus === "SKIPPED" ||
-        (g.averageAccuracy === null && Math.min(3, Math.max(0, g.levelsCompleted)) < 3)
+        ((g as any).assessmentStatus === "SKIPPED" || g.gameStatus === "SKIPPED") &&
+        !unassessedGames.includes(g)
     );
     for (const sg of skippedGames) {
       const calloutText = `Activity Note: ${sg.gameName} was skipped during this quest session, so no performance score is available for this game. Skipping an activity is completely normal when a child feels tired or prefers different puzzle styles, and does not indicate any cognitive deficit.`;
+      const noteLines = wrapText(calloutText, fontRegular, 7.5, CONTENT_WIDTH - 24);
+      const calloutH = noteLines.length * 10 + 10;
+      checkPageBreak(calloutH + 4);
+
+      currentPage.drawRectangle({
+        x: MARGIN,
+        y: y - calloutH,
+        width: CONTENT_WIDTH,
+        height: calloutH,
+        color: BG_TIP_AMBER,
+        borderColor: BORDER_TIP_AMBER,
+        borderWidth: 0.5,
+      });
+
+      let noteY = y - 9;
+      for (const line of noteLines) {
+        currentPage.drawText(line, {
+          x: MARGIN + 12,
+          y: noteY,
+          size: 7.5,
+          font: fontRegular,
+          color: rgb(146 / 255, 64 / 255, 14 / 255),
+        });
+        noteY -= 10;
+      }
+      y -= calloutH + 8;
+    }
+
+    // Dedicated note for partially assessed games
+    const partiallyAssessedGames = gamesList.filter(
+      (g) =>
+        ((g as any).assessmentStatus === "PARTIALLY_ASSESSED" ||
+          (g.gameStatus === "IN_PROGRESS" && g.levelsCompleted > 0 && g.levelsCompleted < 3)) &&
+        !unassessedGames.includes(g) &&
+        !skippedGames.includes(g)
+    );
+    for (const pg of partiallyAssessedGames) {
+      const calloutText = `Activity Note: ${pg.gameName} was partially completed (${pg.levelsCompleted}/3 levels evaluated). Reported scores reflect genuine results on completed levels. Remaining levels were not completed, so full activity assessment is deferred to a future session. This does not indicate any difficulty or deficit.`;
       const noteLines = wrapText(calloutText, fontRegular, 7.5, CONTENT_WIDTH - 24);
       const calloutH = noteLines.length * 10 + 10;
       checkPageBreak(calloutH + 4);
@@ -1254,6 +1426,10 @@ export async function generateReportPdf(
         const accText =
           match?.status === "SKIPPED"
             ? "Skipped"
+            : match?.status === "UNASSESSED" || match?.status === "NOT_COMPLETED"
+            ? "—"
+            : match?.status === "ABANDONED"
+            ? "Aband."
             : match?.accuracy !== null && match?.accuracy !== undefined
             ? `${match.accuracy}%`
             : match?.status === "NOT_ATTEMPTED" || !match
@@ -1572,31 +1748,151 @@ export async function generateReportPdf(
         });
       }
 
-      y -= cardHeight + 12;
+      y -= cardHeight + 10;
     }
 
-    y -= 14;
+    y -= 6;
+
+    // =========================================================================
+    // "START HERE: YOUR BEST FIRST STEP AT HOME" CALLOUT (PAGE 3)
+    // =========================================================================
+    const startHere = data.aiReport.startHere || {
+      activityTitle: "Surprise Rule Switching",
+      relatedDomain: "Trying New Rules (Mental Flexibility)",
+      relatedGameKey: "rule-discovery",
+      whyThisFirst: `Starting with this activity builds quick confidence because it turns rule switching into an easy, laughter-filled family routine.`,
+      evidenceCitation: `Observed during gameplay exploration.`,
+      quickSteps: [
+        "Spend just 5 to 10 minutes together before dinner or after school—keep it short and joyful.",
+        "Demonstrate the first round playfully so there is zero pressure on your child to get it 'right'.",
+        "Celebrate curiosity and creative thinking with a high-five at the end of each round.",
+      ],
+      suggestedDuration: "10 minutes",
+    };
+
+    const shWhyLines = wrapText(startHere.whyThisFirst, fontRegular, 7, CONTENT_WIDTH - 24);
+    const shEvidenceLines = wrapText(`Evidence: ${startHere.evidenceCitation}`, fontBold, 7, CONTENT_WIDTH - 24);
+    const shStepLines: string[][] = startHere.quickSteps.map((st, i) =>
+      wrapText(`${i + 1}. ${st}`, fontRegular, 6.8, CONTENT_WIDTH - 28)
+    );
+    let shStepsH = 0;
+    for (const sl of shStepLines) shStepsH += sl.length * 8 + 1;
+
+    const startHereCardH =
+      18 + // Title
+      11 + // Activity name & domain
+      shWhyLines.length * 8.5 +
+      shEvidenceLines.length * 8.5 +
+      10 + // "Quick 10-Minute Steps:"
+      shStepsH +
+      6;
+
+    drawRoundedRect(currentPage, {
+      x: MARGIN,
+      y: y - startHereCardH,
+      width: CONTENT_WIDTH,
+      height: startHereCardH,
+      radius: 8,
+      color: rgb(254 / 255, 252 / 255, 232 / 255),
+      borderColor: BRAND_GOLD,
+      borderWidth: 1.2,
+    });
+
+    currentPage.drawText("START HERE: YOUR BEST FIRST STEP AT HOME", {
+      x: MARGIN + 10,
+      y: y - 13,
+      size: 8.5,
+      font: fontBold,
+      color: BRAND_NAVY,
+    });
+
+    const shDurText = `Duration: ${startHere.suggestedDuration || "10 mins"}`;
+    currentPage.drawText(shDurText, {
+      x: PAGE_WIDTH - MARGIN - fontBold.widthOfTextAtSize(shDurText, 7) - 10,
+      y: y - 13,
+      size: 7,
+      font: fontBold,
+      color: BRAND_AMBER,
+    });
+
+    let shY = y - 24;
+    currentPage.drawText(`${startHere.activityTitle} · ${startHere.relatedDomain}`, {
+      x: MARGIN + 10,
+      y: shY,
+      size: 8,
+      font: fontBold,
+      color: BRAND_AMBER,
+    });
+    shY -= 10;
+
+    for (const line of shWhyLines) {
+      currentPage.drawText(line, {
+        x: MARGIN + 10,
+        y: shY,
+        size: 7,
+        font: fontRegular,
+        color: TEXT_BODY,
+      });
+      shY -= 8.5;
+    }
+
+    for (const line of shEvidenceLines) {
+      currentPage.drawText(line, {
+        x: MARGIN + 10,
+        y: shY,
+        size: 7,
+        font: fontBold,
+        color: BRAND_NAVY,
+      });
+      shY -= 8.5;
+    }
+    shY -= 2;
+
+    currentPage.drawText("Quick 10-Minute Steps to Try:", {
+      x: MARGIN + 10,
+      y: shY,
+      size: 7.2,
+      font: fontBold,
+      color: TEXT_DARK,
+    });
+    shY -= 9;
+
+    for (const lines of shStepLines) {
+      for (const line of lines) {
+        currentPage.drawText(line, {
+          x: MARGIN + 14,
+          y: shY,
+          size: 6.8,
+          font: fontRegular,
+          color: TEXT_DARK,
+        });
+        shY -= 8;
+      }
+      shY -= 1;
+    }
+
+    y -= startHereCardH + 8;
 
     // =========================================================================
     // PARENT-FRIENDLY HOME ACTIVITIES & PRACTICE ROUTINES
     // =========================================================================
-    checkPageBreak(140);
+    checkPageBreak(100);
 
     // Section Banner
-    const actBannerH = 36;
+    const actBannerH = 28;
     drawRoundedRect(currentPage, {
       x: MARGIN,
       y: y - actBannerH,
       width: CONTENT_WIDTH,
       height: actBannerH,
-      radius: 9,
+      radius: 8,
       color: BRAND_NAVY,
     });
 
     currentPage.drawText("PARENT-FRIENDLY HOME ACTIVITIES & PRACTICE ROUTINES", {
-      x: MARGIN + 14,
-      y: y - 17,
-      size: 9.5,
+      x: MARGIN + 12,
+      y: y - 13,
+      size: 8.5,
       font: fontBold,
       color: BRAND_GOLD,
     });
@@ -1604,63 +1900,67 @@ export async function generateReportPdf(
     currentPage.drawText(
       "Screen-free, enjoyable household activities designed to nurture developing skills through everyday family play",
       {
-        x: MARGIN + 14,
-        y: y - 29,
-        size: 7.5,
+        x: MARGIN + 12,
+        y: y - 22,
+        size: 7,
         font: fontRegular,
         color: WHITE,
       }
     );
 
-    y -= actBannerH + 14;
+    y -= actBannerH + 8;
 
     const activities = data.aiReport.parentRecommendations || [];
     for (let aIdx = 0; aIdx < activities.length; aIdx++) {
       const act = formatHomeActivity(activities[aIdx]);
 
       const skillsStr = `Skills Practiced: ${act.skills.join(", ")}`;
-      const skillsLines = wrapText(skillsStr, fontBold, 8, CONTENT_WIDTH - 28);
+      const skillsLines = wrapText(skillsStr, fontBold, 7.5, CONTENT_WIDTH - 28);
 
       const matStr = `Materials: ${act.materials.join(", ")}`;
-      const matLines = wrapText(matStr, fontRegular, 8, CONTENT_WIDTH - 28);
+      const matLines = wrapText(matStr, fontRegular, 7.5, CONTENT_WIDTH - 28);
+
+      const findingStr = act.observedFinding ? `Why This Helps: ${act.observedFinding}` : null;
+      const findingLines = findingStr ? wrapText(findingStr, fontRegular, 7.2, CONTENT_WIDTH - 28) : [];
 
       const instructionStepLines: string[][] = act.instructions.map(
         (step, idx) =>
-          wrapText(`${idx + 1}. ${step}`, fontRegular, 8, CONTENT_WIDTH - 36)
+          wrapText(`${idx + 1}. ${step}`, fontRegular, 7.5, CONTENT_WIDTH - 36)
       );
 
       const oppLines = wrapText(
         `Learning Opportunity: ${act.opportunity}`,
         fontRegular,
-        7.5,
+        7.2,
         CONTENT_WIDTH - 28
       );
 
       const tipLines = wrapText(
         `Parent Tip: ${act.tip}`,
         fontOblique,
-        7.5,
+        7.2,
         CONTENT_WIDTH - 40
       );
 
       let stepsHeight = 0;
       for (const sLines of instructionStepLines) {
-        stepsHeight += sLines.length * 10.5 + 3;
+        stepsHeight += sLines.length * 9.2 + 2;
       }
 
-      const tipBoxHeight = tipLines.length * 10 + 12;
+      const tipBoxHeight = tipLines.length * 9 + 8;
 
       const cardTotalHeight =
-        28 + // Header strip
-        skillsLines.length * 11 +
-        matLines.length * 11 +
-        12 + // Instructions Title
+        22 + // Header strip
+        skillsLines.length * 9.5 +
+        matLines.length * 9.5 +
+        (findingLines.length > 0 ? findingLines.length * 8.5 + 3 : 0) +
+        10 + // Instructions Title
         stepsHeight +
-        oppLines.length * 10 +
+        oppLines.length * 9 +
         tipBoxHeight +
-        16;
+        10;
 
-      checkPageBreak(cardTotalHeight + 10);
+      checkPageBreak(cardTotalHeight + 6);
 
       // Card Outer Box
       drawRoundedRect(currentPage, {
@@ -1668,7 +1968,7 @@ export async function generateReportPdf(
         y: y - cardTotalHeight,
         width: CONTENT_WIDTH,
         height: cardTotalHeight,
-        radius: 11,
+        radius: 10,
         color: BG_CARD_GREY,
         borderColor: BORDER_LIGHT,
         borderWidth: 1,
@@ -1677,17 +1977,17 @@ export async function generateReportPdf(
       // Card Header Banner
       drawRoundedRect(currentPage, {
         x: MARGIN,
-        y: y - 24,
+        y: y - 20,
         width: CONTENT_WIDTH,
-        height: 24,
-        radius: 11,
+        height: 20,
+        radius: 10,
         color: rgb(238 / 255, 242 / 255, 246 / 255),
       });
 
       currentPage.drawText(`Activity ${aIdx + 1}: ${act.title}`, {
         x: MARGIN + 12,
-        y: y - 16,
-        size: 9.5,
+        y: y - 14,
+        size: 9,
         font: fontBold,
         color: BRAND_NAVY,
       });
@@ -1697,26 +1997,26 @@ export async function generateReportPdf(
         x:
           PAGE_WIDTH -
           MARGIN -
-          fontBold.widthOfTextAtSize(durText, 8) -
+          fontBold.widthOfTextAtSize(durText, 7.5) -
           12,
-        y: y - 16,
-        size: 8,
+        y: y - 14,
+        size: 7.5,
         font: fontBold,
         color: BRAND_BLUE,
       });
 
-      let cardY = y - 36;
+      let cardY = y - 30;
 
       // Skills Practiced
       for (const line of skillsLines) {
         currentPage.drawText(line, {
           x: MARGIN + 12,
           y: cardY,
-          size: 8,
+          size: 7.5,
           font: fontBold,
           color: BRAND_NAVY,
         });
-        cardY -= 11;
+        cardY -= 9.5;
       }
 
       // Materials
@@ -1724,24 +2024,39 @@ export async function generateReportPdf(
         currentPage.drawText(line, {
           x: MARGIN + 12,
           y: cardY,
-          size: 8,
+          size: 7.5,
           font: fontRegular,
           color: TEXT_DARK,
         });
-        cardY -= 11;
+        cardY -= 9.5;
       }
 
-      cardY -= 3;
+      // Why This Helps (Observed Finding from actual gameplay)
+      if (findingLines.length > 0) {
+        for (const line of findingLines) {
+          currentPage.drawText(line, {
+            x: MARGIN + 12,
+            y: cardY,
+            size: 7.2,
+            font: fontRegular,
+            color: rgb(30 / 255, 64 / 255, 175 / 255), // navy/blue
+          });
+          cardY -= 8.5;
+        }
+        cardY -= 1;
+      }
+
+      cardY -= 2;
 
       // Instructions Title
       currentPage.drawText("Step-by-Step Instructions:", {
         x: MARGIN + 12,
         y: cardY,
-        size: 8,
+        size: 7.5,
         font: fontBold,
         color: BRAND_NAVY,
       });
-      cardY -= 11;
+      cardY -= 9.5;
 
       // Numbered Steps
       for (const sLines of instructionStepLines) {
@@ -1749,35 +2064,35 @@ export async function generateReportPdf(
           currentPage.drawText(sLines[lIdx]!, {
             x: MARGIN + (lIdx === 0 ? 14 : 22),
             y: cardY,
-            size: 8,
+            size: 7.5,
             font: fontRegular,
             color: TEXT_DARK,
           });
-          cardY -= 10.5;
+          cardY -= 9.2;
         }
-        cardY -= 2;
+        cardY -= 1.5;
       }
 
-      cardY -= 2;
+      cardY -= 1.5;
 
       // Learning Opportunity
       for (const line of oppLines) {
         currentPage.drawText(line, {
           x: MARGIN + 12,
           y: cardY,
-          size: 7.5,
+          size: 7.2,
           font: fontRegular,
           color: TEXT_MUTED,
         });
-        cardY -= 10;
+        cardY -= 9;
       }
 
-      cardY -= 4;
+      cardY -= 3;
 
       // Parent Tip Callout Box
       drawRoundedRect(currentPage, {
         x: MARGIN + 10,
-        y: cardY - tipBoxHeight + 8,
+        y: cardY - tipBoxHeight + 6,
         width: CONTENT_WIDTH - 20,
         height: tipBoxHeight,
         radius: 6,
@@ -1786,19 +2101,64 @@ export async function generateReportPdf(
         borderWidth: 0.5,
       });
 
-      let tipTextY = cardY - 4;
+      let tipTextY = cardY - 3;
       for (const line of tipLines) {
         currentPage.drawText(line, {
           x: MARGIN + 16,
           y: tipTextY,
-          size: 7.5,
+          size: 7.2,
           font: fontOblique,
           color: rgb(146 / 255, 64 / 255, 14 / 255), // dark amber
         });
-        tipTextY -= 10;
+        tipTextY -= 9;
       }
 
-      y -= cardTotalHeight + 12;
+      y -= cardTotalHeight + 8;
+    }
+
+    // Optional Card Flip Retry Invitation (When Card Flip was unassessed or skipped)
+    if (data.aiReport.cardFlipRetryNote) {
+      const retryLines = wrapText(
+        data.aiReport.cardFlipRetryNote,
+        fontRegular,
+        7.5,
+        CONTENT_WIDTH - 28
+      );
+      const retryCardH = 20 + retryLines.length * 9.5 + 8;
+      checkPageBreak(retryCardH + 10);
+
+      drawRoundedRect(currentPage, {
+        x: MARGIN,
+        y: y - retryCardH,
+        width: CONTENT_WIDTH,
+        height: retryCardH,
+        radius: 9,
+        color: rgb(240 / 255, 247 / 255, 255 / 255),
+        borderColor: rgb(186 / 255, 220 / 255, 255 / 255),
+        borderWidth: 1,
+      });
+
+      currentPage.drawText("Cosmic Card Flip — Try at Home Whenever Ready!", {
+        x: MARGIN + 12,
+        y: y - 14,
+        size: 8.5,
+        font: fontBold,
+        color: BRAND_BLUE,
+      });
+
+      let rY = y - 25;
+      for (const line of retryLines) {
+        currentPage.drawText(line, {
+          x: MARGIN + 12,
+          y: rY,
+          size: 7.5,
+          font: fontRegular,
+          color: TEXT_BODY,
+        });
+        rY -= 9.5;
+      }
+
+      y -= retryCardH + 10;
     }
 
     y -= 10;
@@ -1948,14 +2308,42 @@ export async function generateReportPdf(
 
     y -= ecosystemBoxH + 14;
 
-    // "A note for families" card
-    const noteLine1 =
-      "Every child grows at their own pace, and play is the best way for thinking skills to grow. Pick one or two ideas to try this month and enjoy them together. Small, playful steps add up quickly.";
-    const noteLine2 =
-      "This report highlights your child's current strengths and growing areas based on a single play session. It is not a diagnosis or a label. Children develop at their own pace, and these observations are a starting point for support at home.";
-    const lines1 = wrapText(noteLine1, fontRegular, 7.5, CONTENT_WIDTH - 24);
-    const lines2 = wrapText(noteLine2, fontRegular, 7.2, CONTENT_WIDTH - 24);
-    const noteHeight = 22 + lines1.length * 10 + 4 + lines2.length * 10 + 4;
+    // "A Note for Families: What Does This Mean? & Should I Worry?"
+    const meaningText =
+      data.aiReport.whatDoesThisMean ||
+      `Think of this quest like a fun obstacle course for the brain! The games gave ${displayChildName} different types of playful challenges: holding pictures in mind, pausing before clicking, spotting patterns, and trying new rules. The scores show where ${displayChildName} felt confident today and highlight natural areas where playful practice can help build even greater confidence.`;
+
+    const worryData = data.aiReport.shouldIWorry || {
+      reassurance: `Not at all! Every child's brain grows at its own unique pace, and this report is simply a helpful snapshot of one playful day—not a diagnosis or a test of intelligence.`,
+      keyPoints: [
+        "Scores naturally go up and down based on tiredness, how familiar the game is, and time of day.",
+        "A lower score in any activity simply means it is an exciting new skill to explore, not a permanent weakness.",
+      ],
+      teacherPartnershipGuidance: `Share what you discover here with ${displayChildName}'s teacher! Ask how ${displayChildName} handles multi-step directions in class, and celebrate small daily wins together.`,
+    };
+
+    const meaningLines = wrapText(meaningText, fontRegular, 7.5, CONTENT_WIDTH - 24);
+    const reassurLines = wrapText(
+      `${worryData.reassurance} ${worryData.keyPoints.join(" ")}`,
+      fontRegular,
+      7.2,
+      CONTENT_WIDTH - 24
+    );
+    const teacherLines = wrapText(
+      `Teacher Partnership: ${worryData.teacherPartnershipGuidance}`,
+      fontOblique,
+      7.2,
+      CONTENT_WIDTH - 24
+    );
+
+    const noteHeight =
+      20 +
+      meaningLines.length * 9.5 +
+      4 +
+      reassurLines.length * 9 +
+      4 +
+      teacherLines.length * 9 +
+      6;
 
     checkPageBreak(noteHeight + 10);
 
@@ -1965,19 +2353,21 @@ export async function generateReportPdf(
       width: CONTENT_WIDTH,
       height: noteHeight,
       radius: 8,
-      color: BG_CARD_GREY,
+      color: rgb(240 / 255, 247 / 255, 255 / 255), // soft calming blue
+      borderColor: rgb(186 / 255, 220 / 255, 255 / 255),
+      borderWidth: 1,
     });
 
-    currentPage.drawText("A note for families", {
+    currentPage.drawText("A Note for Families: What Does This Mean & Should You Worry?", {
       x: MARGIN + 12,
-      y: y - 14,
+      y: y - 13,
       size: 8.5,
       font: fontBold,
       color: BRAND_NAVY,
     });
 
-    let ny = y - 27;
-    for (const l of lines1) {
+    let ny = y - 25;
+    for (const l of meaningLines) {
       currentPage.drawText(l, {
         x: MARGIN + 12,
         y: ny,
@@ -1985,21 +2375,34 @@ export async function generateReportPdf(
         font: fontRegular,
         color: TEXT_BODY,
       });
-      ny -= 10;
+      ny -= 9.5;
     }
-    ny -= 3;
-    for (const l of lines2) {
+    ny -= 2;
+
+    for (const l of reassurLines) {
       currentPage.drawText(l, {
         x: MARGIN + 12,
         y: ny,
         size: 7.2,
         font: fontRegular,
-        color: TEXT_MUTED,
+        color: rgb(22 / 255, 101 / 255, 52 / 255), // reassuring dark green
       });
-      ny -= 10;
+      ny -= 9;
+    }
+    ny -= 2;
+
+    for (const l of teacherLines) {
+      currentPage.drawText(l, {
+        x: MARGIN + 12,
+        y: ny,
+        size: 7.2,
+        font: fontOblique,
+        color: BRAND_BLUE,
+      });
+      ny -= 9;
     }
 
-    y -= noteHeight + 12;
+    y -= noteHeight + 10;
 
     // =========================================================================
     // IMPORTANT EDUCATIONAL ASSESSMENT DISCLAIMER

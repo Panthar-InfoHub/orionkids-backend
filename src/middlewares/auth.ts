@@ -9,9 +9,36 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 
 export const requireAuth: RequestHandler = asyncHandler(
   async (req, _res, next) => {
-    const session = await auth.api.getSession({
-      headers: fromNodeHeaders(req.headers),
-    });
+    let session;
+    try {
+      session = await auth.api.getSession({
+        headers: fromNodeHeaders(req.headers),
+      });
+    } catch (err: any) {
+      logger.warn(
+        { path: req.path, method: req.method, err: err?.message || err },
+        "auth.session_error: Error retrieving session from Better Auth; retrying once"
+      );
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        session = await auth.api.getSession({
+          headers: fromNodeHeaders(req.headers),
+        });
+      } catch (retryErr: any) {
+        logger.error(
+          {
+            path: req.path,
+            method: req.method,
+            err: retryErr?.message || retryErr,
+          },
+          "auth.session_retry_failed: Second attempt to get session failed; treating as unauthenticated"
+        );
+        throw new UnauthorizedError(
+          "Session expired or invalid",
+          "UNAUTHENTICATED"
+        );
+      }
+    }
 
     if (!session) {
       logger.warn(
@@ -23,14 +50,31 @@ export const requireAuth: RequestHandler = asyncHandler(
 
     // Authoritatively retrieve the user's role and account status directly from PostgreSQL
     // on every authenticated request so admin-triggered restrictions apply immediately.
-    const user = await prisma.user.findUnique({
-      where: { id: session.user.id },
-      select: {
-        id: true,
-        role: true,
-        status: true,
-      },
-    });
+    let user;
+    try {
+      user = await prisma.user.findUnique({
+        where: { id: session.user.id },
+        select: {
+          id: true,
+          role: true,
+          status: true,
+        },
+      });
+    } catch (dbErr: any) {
+      logger.warn(
+        { userId: session.user.id, err: dbErr?.message || dbErr },
+        "auth.user_lookup_error: Transient database error during user lookup; retrying once"
+      );
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      user = await prisma.user.findUnique({
+        where: { id: session.user.id },
+        select: {
+          id: true,
+          role: true,
+          status: true,
+        },
+      });
+    }
 
     if (!user) {
       logger.warn(

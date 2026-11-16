@@ -45,11 +45,13 @@ describe("Level Attempt Concurrency & Deadlock Prevention Suite", () => {
     const session = await getOrCreateActiveSession(userId, childProfileId);
     sessionId = session.id;
 
-    await saveWarmUpSubmission(userId, {
+    await saveWarmUpSubmission(
+      userId,
       sessionId,
-      answers: { emotionalState: "excited", copingStrategy: "focus" },
-      completedAt: new Date().toISOString(),
-    });
+      { emotionalState: "excited", copingStrategy: "focus" },
+      new Date().toISOString(),
+      childProfileId
+    );
 
     // Advance through Level 1 and Level 2
     await startLevelAttempt(userId, sessionId, "stroop", 1);
@@ -84,7 +86,7 @@ describe("Level Attempt Concurrency & Deadlock Prevention Suite", () => {
   it("handles concurrent checkpoint save and level completion without deadlock", async () => {
     // Start Stroop Level 3 (the exact level where the user got the write conflict / deadlock)
     const startRes = await startLevelAttempt(userId, sessionId, "stroop", 3);
-    assert.equal(startRes.success, true);
+    assert.ok(startRes.attemptId);
     const attemptId = startRes.attemptId;
     assert.ok(attemptId, "Active attemptId must be returned");
 

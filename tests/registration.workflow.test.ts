@@ -1,6 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { prisma } from "../src/lib/prisma.js";
+import { prisma, disconnectPrisma } from "../src/lib/prisma.js";
 import {
   getRegistrationStatus,
   acceptUserTerms,
@@ -457,5 +457,9 @@ describe("Production Authentication, Terms Acceptance, Admin Approval & Registra
         where: { id: testConcurrentUserId },
       });
     }
+  });
+
+  after(async () => {
+    await disconnectPrisma();
   });
 });

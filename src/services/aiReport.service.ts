@@ -3,6 +3,7 @@ import { z } from "zod";
 import { openaiApiKey, env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
 import { estimateOpenAiCostUsd } from "../config/pricing.js";
+import { formatChildName } from "../lib/formatChildName.js";
 import {
   CANONICAL_GAMES,
   TOTAL_GAMES,
@@ -67,6 +68,10 @@ export const HomeActivityItemSchema = z.object({
   parentTip: z.string().min(1, "Parent tip is required"),
   description: z.string().optional(),
   activityType: z.string().optional(),
+  relatedGameKey: z.string().optional(),
+  relatedDomain: z.string().optional(),
+  observedFinding: z.string().optional(),
+  unassessedNote: z.string().optional(),
 });
 export type HomeActivityItem = z.infer<typeof HomeActivityItemSchema>;
 
@@ -92,8 +97,30 @@ export const HomeActivityEntrySchema = z.union([
     parentTip: "Celebrate curiosity and exploration rather than expecting immediate accuracy.",
     description: legacy.description,
     activityType: legacy.activityType || "Home Game",
+    relatedGameKey: undefined,
+    relatedDomain: undefined,
+    observedFinding: undefined,
+    unassessedNote: undefined,
   })),
 ]);
+
+export const ShouldIWorrySchema = z.object({
+  reassurance: z.string(),
+  keyPoints: z.array(z.string()),
+  teacherPartnershipGuidance: z.string(),
+});
+export type ShouldIWorry = z.infer<typeof ShouldIWorrySchema>;
+
+export const StartHereSchema = z.object({
+  activityTitle: z.string(),
+  relatedDomain: z.string(),
+  relatedGameKey: z.string(),
+  whyThisFirst: z.string(),
+  evidenceCitation: z.string(),
+  quickSteps: z.array(z.string()),
+  suggestedDuration: z.string(),
+});
+export type StartHere = z.infer<typeof StartHereSchema>;
 
 export const AiStructuredReportSchema = z.object({
   reportTitle: z
@@ -102,15 +129,20 @@ export const AiStructuredReportSchema = z.object({
   childOverview: z.string(),
   questSummary: z.string(),
   overallPerformanceSummary: z.string(),
+  whatDoesThisMean: z.string().optional(),
+  shouldIWorry: ShouldIWorrySchema.optional(),
+  startHere: StartHereSchema.optional(),
+  cardFlipRetryNote: z.string().optional(),
   gameWiseAnalysis: z.array(
     z.object({
       gameKey: z.string(),
       gameName: z.string(),
       cognitiveDomain: z.string(),
       gameStatus: z
-        .enum(["COMPLETED", "SKIPPED", "IN_PROGRESS", "NOT_ATTEMPTED"])
+        .enum(["COMPLETED", "SKIPPED", "IN_PROGRESS", "NOT_ATTEMPTED", "UNASSESSED", "ABANDONED", "PARTIALLY_ASSESSED"])
         .default("COMPLETED")
         .or(z.string()),
+      assessmentStatus: z.string().optional(),
       levelsCompleted: z.number().int().min(0).max(3),
       averageAccuracy: z.number().nullable(),
       averageReactionTimeMs: z.number().nullable(),
@@ -155,6 +187,10 @@ export interface GameplayReportInput {
     totalLevelsCompleted: number;
     overallAccuracy: number;
     totalDurationMs: number;
+    activeGameplayDurationMs?: number | null;
+    hasBreaks?: boolean;
+    sessionDurationMinutes?: number;
+    isProlongedSession?: boolean;
   };
   warmUp: {
     copingStrategy: string;
@@ -168,9 +204,16 @@ export interface GameplayReportInput {
     gameName: string;
     domain: string;
     gameStatus?: string;
+    assessmentStatus?: string;
     levelsCompleted: number;
     averageAccuracy: number | null;
     averageReactionTimeMs: number | null;
+    playOrder?: number | null;
+    isFirstGame?: boolean;
+    isLastGame?: boolean;
+    firstAttemptAt?: string | null;
+    lastAttemptAt?: string | null;
+    activeDurationMs?: number | null;
     levels: Array<{
       levelNumber: number;
       attemptNumber: number;
@@ -180,8 +223,28 @@ export interface GameplayReportInput {
       accuracy: number | null;
       durationMs: number | null;
       averageReactionTimeMs: number | null;
+      startedAt?: string | null;
+      completedAt?: string | null;
     }>;
   }>;
+  chronology?: {
+    gameplayOrder: Array<{
+      gameKey: string;
+      gameName: string;
+      playOrder: number;
+      assessmentStatus: string;
+      averageAccuracy: number | null;
+      activeDurationMs: number | null;
+      firstAttemptAt: string | null;
+      lastAttemptAt: string | null;
+    }>;
+    firstGamePlayed: string | null;
+    lastGamePlayed: string | null;
+    wallClockDurationMinutes: number;
+    activeGameplayDurationMinutes: number | null;
+    isLateGameFatigueContext?: boolean;
+    isLateGameExitContext?: boolean;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -236,18 +299,76 @@ CORE PRINCIPLES & GUIDELINES
    - Use supportive, warm, constructive, and dignified educational language.
    - Absolutely NEVER describe a child as weak, deficient, incapable, failing, or slow. Frame growth areas as exciting emerging frontiers.
 
-4. SKIPPED GAMES & DATA INTEGRITY:
-   - If a game has gameStatus "SKIPPED" (or levelsCompleted < 3 with null accuracy):
+4. CONSISTENT CHILD NAME CAPITALIZATION:
+   - Always render the child's name with consistent, professional capitalization starting with a capital letter (e.g. "Ananya", "Riya Sharma", "Mary-Jane").
+   - Never output lowercase child names (e.g. never "ananya", "rahul").
+
+5. ASSESSMENT STATUS & DATA INTEGRITY (ASSESSED, PARTIALLY_ASSESSED, SKIPPED, UNASSESSED, INCOMPLETE, ABANDONED):
+   - Accurately distinguish assessment status based on recorded data:
+     * ASSESSED: Sufficient valid assessment data exists (all 3 levels completed with genuine trials).
+     * PARTIALLY_ASSESSED: At least one level genuinely completed, but fewer than all 3 levels completed (e.g. 1 or 2 levels finished, remaining skipped or incomplete).
+     * SKIPPED: The child explicitly skipped the game or its relevant stages without completing levels.
+     * UNASSESSED: The game was never presented, started, or assessed (e.g. Card Flip omitted or unassessed).
+     * INCOMPLETE: The game was started but not completed sufficiently for a valid assessment.
+     * ABANDONED: The game or session was abandoned.
+   - If a game has assessmentStatus "PARTIALLY_ASSESSED":
+     * In gameWiseAnalysis:
+       - summary MUST clearly state which levels were completed and which were skipped or incomplete, state genuine accuracy for completed levels, and explicitly clarify that observations are based on partial gameplay and do not indicate any difficulty, weakness, or deficit.
+       - averageAccuracy MUST report the genuine average accuracy across completed levels (never null out or falsify).
+       - averageReactionTimeMs MUST report genuine reaction time across completed levels.
+       - levelsCompleted MUST reflect the exact number of completed levels (1 or 2).
+       - assessmentStatus MUST be "PARTIALLY_ASSESSED".
+     * In observedStrengths and areasForPractice:
+       - NEVER classify a partially assessed game as a top superpower or weakness.
+   - If a game has assessmentStatus "UNASSESSED" (or gameStatus "UNASSESSED"):
+     * In gameWiseAnalysis:
+       - summary MUST state: "This activity was not assessed during this session, so no performance score is recorded. This does not indicate any difficulty or cognitive weakness."
+       - If Card Flip was unassessed: explicitly state that visual working memory was not evaluated, that this does not indicate any memory deficit, and provide an encouraging recommendation to retry or explore Cosmic Card Flip in the future.
+       - averageAccuracy MUST be null (never 0% or fake score).
+       - averageReactionTimeMs MUST be null.
+       - levelsCompleted MUST be 0.
+       - assessmentStatus MUST be "UNASSESSED".
+       - gameStatus MUST be "UNASSESSED".
+     * In observedStrengths and areasForPractice:
+       - NEVER classify an unassessed game as an observed strength or superpower.
+       - NEVER classify an unassessed game as a weakness or area for practice.
+   - If a game has assessmentStatus "SKIPPED":
      * In gameWiseAnalysis:
        - summary MUST state: "This activity was skipped during the quest session, so no performance score is available for this game. Skipping an activity is completely normal when a child feels tired or prefers different puzzle styles, and does not indicate any cognitive deficit."
        - averageAccuracy MUST be null (never 0% or fake score).
-       - averageReactionTimeMs MUST be null (never fake pace).
-       - levelsCompleted MUST be the actual unique completed levels count (0 to 3, never exceeding 3).
+       - averageReactionTimeMs MUST be null.
        - gameStatus MUST be "SKIPPED".
+       - assessmentStatus MUST be "SKIPPED".
      * In observedStrengths and areasForPractice:
-       - NEVER treat a skipped game as a weakness, deficit, or practice area based on low/missing score.
-       - Only draw practice areas from games that were genuinely completed and scored.
+       - NEVER treat a skipped game as a weakness, deficit, or practice area.
+   - ONLY draw strengths and practice areas from games that were genuinely ASSESSED (assessmentStatus === "ASSESSED" with valid scores).
    - Levels Completed for any game must NEVER exceed 3 (always bounded 0 to 3).
+
+5. CHRONOLOGICAL GAMEPLAY ANALYSIS & FATIGUE-AWARE INTERPRETATION:
+   - Gameplay Order & Chronology:
+     * Games may be presented or attempted in varying order rather than static 1 through 6. Inspect chronology metadata, playOrder, isFirstGame, and isLastGame to identify the actual sequence of play (first, middle, and concluding games).
+     * Never assume Game 1 was played first or Game 6 was played last unless verified by playOrder or chronology.
+   - Wall-Clock vs. Active Duration & Breaks:
+     * Distinguish wall-clock session duration (sessionDurationMinutes) from active gameplay duration (activeGameplayDurationMs / activeGameplayDurationMinutes).
+     * If the session included breaks (hasBreaks is true, where wall-clock exceeds active gameplay by >= 15 minutes), note positively that the child completed activities across multiple intervals or took healthy pauses between games.
+   - Fatigue-Aware Framing (Cautious, Non-Clinical, Supportive):
+     * If the quest session was prolonged (>= 40 minutes) AND isLateGameFatigueContext is true (earlier games were strong/stable but performance dropped in the final game):
+       - Frame the late-game variation as natural tired attention or sustained mental effort across an extended session.
+       - NEVER diagnose "fatigue", "ADHD", "attention deficit", or cognitive weakness.
+       - NEVER assign a "fatigue score" or treat tiredness as a personal deficit or permanent limitation.
+       - Use cautious, supportive phrasing: e.g., "Because [Game Name] was completed toward the end of an extended [X]-minute quest session, the observed variation in accuracy may reflect natural tiredness after sustained focus rather than difficulty with [Domain]. We recommend exploring similar puzzles when fresh to observe baseline confidence."
+       - In areasForPractice: do NOT label this final game as a primary cognitive deficit or weakness. Frame it as "Gentle Practice with [Domain] (Revisit When Fresh)" and highlight that earlier activities demonstrated sustained focus.
+     * If the quest session was prolonged (>= 40 minutes) AND isLateGameExitContext is true (the final game was skipped or abandoned after earlier games were attempted):
+       - Frame this neutrally as a natural self-selected pause or rest after sustained effort.
+       - Do not penalize or criticize the child. Skipping an activity at the end of an extended session is completely normal.
+     * If the quest session was prolonged (>= 40 minutes) AND performance remained consistent/strong throughout:
+       - Celebrate the child's stamina, focus, and sustained engagement across an extended session.
+       - Do NOT invent or claim fatigue if the child performed consistently well.
+     * If the quest session was standard or short (< 40 minutes):
+       - Do NOT mention fatigue, sustained stamina, or long-session effects. Evaluate gameplay on its own merits without speculating about fatigue.
+   - Data Integrity for Unassessed and Partially Assessed Games:
+     * Never draw conclusions about abilities from unassessed or skipped games.
+     * A partially assessed game must be reported based strictly on its completed levels and excluded from superpowers and areas for practice.
 
 ================================================================================
 DETAILED SECTION REQUIREMENTS
@@ -310,6 +431,8 @@ You must respond ONLY with a single valid JSON object strictly matching this str
       "gameKey": "stroop",
       "gameName": "Stroop Colour-Word",
       "cognitiveDomain": "Focus & Interference Resistance",
+      "gameStatus": "COMPLETED",
+      "assessmentStatus": "ASSESSED",
       "levelsCompleted": 3,
       "averageAccuracy": 90,
       "averageReactionTimeMs": 1450,
@@ -394,10 +517,10 @@ export async function generateAiReport(input: GameplayReportInput): Promise<{
     "ai_report.generation_started"
   );
 
-  if (!openaiApiKey) {
+  if (!openaiApiKey || process.env.SKIP_OPENAI_IN_TESTS === "true") {
     logger.warn(
       { sessionId: input.quest.sessionId },
-      "ai_report.key_missing: OPEN_AI_API_KEY not configured, generating rich rule-based report"
+      "ai_report.key_missing_or_skipped: OPENAI_API_KEY not configured or skipped in tests, generating rich rule-based report"
     );
     const fallback = generateRuleBasedReport(input);
     return {
@@ -405,7 +528,7 @@ export async function generateAiReport(input: GameplayReportInput): Promise<{
       modelName: "rule-based-engine",
       usedAi: false,
       errorMessage:
-        "OpenAI API key not configured. Generated authoritative rule-based report.",
+        "OpenAI API key not configured or skipped. Generated authoritative rule-based report.",
     };
   }
 
@@ -424,11 +547,13 @@ export async function generateAiReport(input: GameplayReportInput): Promise<{
       maxRetries: 1, // at most 1 retry for reliability
     });
 
+    const formattedChildName = formatChildName(input.child.childName, "Child");
+
     // Formulate optimized, structured user message
     const userPrompt = `Generate the comprehensive OrionKids Cognitive Exploration & Gameplay Report for this child based on their authoritative gameplay telemetry:
 
 === CHILD PROFILE ===
-- Name: ${input.child.childName}
+- Name: ${formattedChildName}
 - Age: ${input.child.age} years old
 - Class: ${input.child.selectedClass}
 - School: ${input.child.school || "Not specified"}
@@ -439,8 +564,22 @@ export async function generateAiReport(input: GameplayReportInput): Promise<{
 - Completed At: ${input.quest.completedAt || "In Progress / Recently Finished"}
 - Total Levels Completed: ${input.quest.totalLevelsCompleted}/18
 - Overall Accuracy: ${input.quest.overallAccuracy}%
-- Total Active Duration: ${Math.round(input.quest.totalDurationMs / 1000)} seconds (~${Math.round(input.quest.totalDurationMs / 60000)} minutes)
-
+- Wall-Clock Session Duration: ${input.quest.sessionDurationMinutes ?? Math.round(input.quest.totalDurationMs / 60000)} minutes
+- Active Gameplay Duration: ${input.quest.activeGameplayDurationMs ? Math.round(input.quest.activeGameplayDurationMs / 60000) : Math.round(input.quest.totalDurationMs / 60000)} minutes
+- Session Intervals / Breaks: ${input.quest.hasBreaks ? "Yes (session included healthy pauses or intervals >= 15 min between activities)" : "Continuous session without major breaks"}
+- Prolonged Session (>= 40 min): ${input.quest.isProlongedSession ? "Yes" : "No"}
+${
+  input.chronology
+    ? `
+=== CHRONOLOGICAL GAMEPLAY FLOW ===
+- Actual Play Sequence: ${input.chronology.gameplayOrder.map((g) => `#${g.playOrder}: ${g.gameName} (${g.assessmentStatus}${g.averageAccuracy !== null ? `, ${g.averageAccuracy}%` : ""})`).join(" -> ")}
+- First Game Attempted: ${input.chronology.firstGamePlayed || "N/A"}
+- Concluding Game Attempted: ${input.chronology.lastGamePlayed || "N/A"}
+- Late-Game Fatigue Context: ${input.chronology.isLateGameFatigueContext ? "Yes (performance dropped in concluding game after prolonged session)" : "No"}
+- Late-Game Exit Context: ${input.chronology.isLateGameExitContext ? "Yes (concluding game skipped/abandoned after prolonged session)" : "No"}
+`
+    : ""
+}
 === WARM-UP & LEARNING PREFERENCES ===
 - Approach to Challenging Puzzles: ${input.warmUp.copingStrategy}
 - Preferred Learning Style: ${input.warmUp.learningStyle}
@@ -451,7 +590,8 @@ export async function generateAiReport(input: GameplayReportInput): Promise<{
 ${input.games
   .map(
     (g) =>
-      `• Game ${g.gameId}: ${g.gameName} (${g.domain})
+      `• Game ${g.gameId}: ${g.gameName} (${g.domain})${g.playOrder ? ` [Chronological Order: #${g.playOrder}${g.isFirstGame ? " - First Game" : ""}${g.isLastGame ? " - Concluding Game" : ""}]` : ""}
+   - Assessment Status: ${g.assessmentStatus || "UNASSESSED"}
    - Levels Completed: ${g.levelsCompleted}/3
    - Average Accuracy: ${g.averageAccuracy !== null ? `${g.averageAccuracy}%` : "Not recorded"}
    - Average Reaction Time: ${g.averageReactionTimeMs !== null ? `${(g.averageReactionTimeMs / 1000).toFixed(2)}s` : "Not recorded"}
@@ -535,6 +675,17 @@ ${g.levels
       }));
     }
 
+    // Supplement parent-friendly Phase 3 guidance if omitted by LLM
+    if (!parsedJson.whatDoesThisMean || !parsedJson.shouldIWorry || !parsedJson.startHere) {
+      const fallbackDefaults = generateRuleBasedReport(input);
+      if (!parsedJson.whatDoesThisMean) parsedJson.whatDoesThisMean = fallbackDefaults.whatDoesThisMean;
+      if (!parsedJson.shouldIWorry) parsedJson.shouldIWorry = fallbackDefaults.shouldIWorry;
+      if (!parsedJson.startHere) parsedJson.startHere = fallbackDefaults.startHere;
+      if (!parsedJson.cardFlipRetryNote && fallbackDefaults.cardFlipRetryNote) {
+        parsedJson.cardFlipRetryNote = fallbackDefaults.cardFlipRetryNote;
+      }
+    }
+
     const validated = AiStructuredReportSchema.parse(parsedJson);
 
     logger.info(
@@ -597,9 +748,16 @@ interface GameStats {
   gameName: string;
   domain: string;
   gameStatus: string;
+  assessmentStatus: string;
   levelsCompleted: number;
   averageAccuracy: number | null;
   averageReactionTimeMs: number | null;
+  playOrder: number | null;
+  isFirstGame: boolean;
+  isLastGame: boolean;
+  firstAttemptAt: string | null;
+  lastAttemptAt: string | null;
+  activeDurationMs: number | null;
   levels: Array<{
     levelNumber: number;
     attemptNumber: number;
@@ -609,13 +767,90 @@ interface GameStats {
     accuracy: number | null;
     durationMs: number | null;
     averageReactionTimeMs: number | null;
+    startedAt?: string | null;
+    completedAt?: string | null;
   }>;
 }
 
 export function generateRuleBasedReport(
   input: GameplayReportInput
 ): AiStructuredReport {
-  const { child, quest, warmUp, games } = input;
+  const { child: rawChild, quest, warmUp, games } = input;
+  const child = {
+    ...rawChild,
+    childName: formatChildName(rawChild.childName, "Child"),
+  };
+
+  const sessionMinutes =
+    quest.sessionDurationMinutes ?? Math.round(quest.totalDurationMs / 60000);
+  const isProlongedSession = quest.isProlongedSession ?? sessionMinutes >= 40;
+  const hasBreaks = Boolean(quest.hasBreaks);
+
+  // Establish chronology mappings
+  let isLateGameFatigueContext = input.chronology?.isLateGameFatigueContext;
+  let isLateGameExitContext = input.chronology?.isLateGameExitContext;
+  const chronologyOrderMap = new Map<
+    string,
+    { playOrder: number; isFirst: boolean; isLast: boolean }
+  >();
+
+  if (input.chronology?.gameplayOrder && input.chronology.gameplayOrder.length > 0) {
+    const list = input.chronology.gameplayOrder;
+    list.forEach((entry, idx) => {
+      chronologyOrderMap.set(entry.gameKey, {
+        playOrder: entry.playOrder,
+        isFirst: idx === 0,
+        isLast: idx === list.length - 1,
+      });
+    });
+  }
+
+  // If no chronology object provided, establish order dynamically from timestamps or array order
+  if (chronologyOrderMap.size === 0) {
+    const attemptedKeys: Array<{
+      key: string;
+      earliestTs: number;
+      originalIdx: number;
+    }> = [];
+
+    games.forEach((g, idx) => {
+      if (
+        g.gameStatus === "UNASSESSED" &&
+        g.assessmentStatus === "UNASSESSED" &&
+        g.levelsCompleted === 0 &&
+        (!g.levels || g.levels.length === 0)
+      ) {
+        return;
+      }
+      let earliest = Infinity;
+      if (g.firstAttemptAt) {
+        const t = new Date(g.firstAttemptAt).getTime();
+        if (!isNaN(t)) earliest = t;
+      }
+      if (g.levels) {
+        for (const lvl of g.levels) {
+          const s = lvl.startedAt ? new Date(lvl.startedAt).getTime() : NaN;
+          const c = lvl.completedAt ? new Date(lvl.completedAt).getTime() : NaN;
+          if (!isNaN(s) && s < earliest) earliest = s;
+          if (!isNaN(c) && c < earliest) earliest = c;
+        }
+      }
+      attemptedKeys.push({ key: g.gameKey, earliestTs: earliest, originalIdx: idx });
+    });
+
+    attemptedKeys.sort((a, b) => {
+      if (a.earliestTs !== b.earliestTs) return a.earliestTs - b.earliestTs;
+      return a.originalIdx - b.originalIdx;
+    });
+
+    attemptedKeys.forEach((entry, idx) => {
+      chronologyOrderMap.set(entry.key, {
+        playOrder: idx + 1,
+        isFirst: idx === 0,
+        isLast: idx === attemptedKeys.length - 1,
+      });
+    });
+  }
 
   // Build canonical game list with real or defaulted metrics
   const analyzedGames: GameStats[] = CANONICAL_GAMES.map((cg) => {
@@ -623,43 +858,160 @@ export function generateRuleBasedReport(
     const rawDone = recorded?.levelsCompleted ?? 0;
     const clampedDone = Math.min(3, Math.max(0, rawDone));
     const isSkipped = recorded?.gameStatus === "SKIPPED";
+    const assessmentStatus =
+      recorded?.assessmentStatus ||
+      (recorded?.gameStatus === "SKIPPED"
+        ? "SKIPPED"
+        : recorded?.gameStatus === "UNASSESSED"
+          ? "UNASSESSED"
+          : recorded?.gameStatus === "ABANDONED"
+            ? "ABANDONED"
+            : recorded?.gameStatus === "PARTIALLY_ASSESSED"
+              ? "PARTIALLY_ASSESSED"
+              : isSkipped
+                ? "SKIPPED"
+                : clampedDone === 3 && recorded?.averageAccuracy !== null
+                  ? "ASSESSED"
+                  : clampedDone > 0
+                    ? "PARTIALLY_ASSESSED"
+                    : "UNASSESSED");
+
+    const isAssessed = assessmentStatus === "ASSESSED";
+    const isPartiallyAssessed = assessmentStatus === "PARTIALLY_ASSESSED";
+    const hasScores = isAssessed || isPartiallyAssessed;
+
+    const chronoInfo = chronologyOrderMap.get(cg.key);
+    const playOrder = recorded?.playOrder ?? chronoInfo?.playOrder ?? null;
+    const isFirstGame = recorded?.isFirstGame ?? (chronoInfo?.isFirst ?? false);
+    const isLastGame = recorded?.isLastGame ?? (chronoInfo?.isLast ?? false);
+
     return {
       gameId: cg.id,
       gameKey: cg.key,
       gameName: cg.name,
       domain: cg.domain,
-      gameStatus: isSkipped
-        ? "SKIPPED"
-        : recorded?.gameStatus || (clampedDone === 3 ? "COMPLETED" : "NOT_COMPLETED"),
-      levelsCompleted: clampedDone,
-      averageAccuracy: isSkipped ? null : (recorded?.averageAccuracy ?? null),
-      averageReactionTimeMs: isSkipped ? null : (recorded?.averageReactionTimeMs ?? null),
+      gameStatus: isAssessed
+        ? "COMPLETED"
+        : isPartiallyAssessed
+          ? "IN_PROGRESS"
+          : assessmentStatus === "SKIPPED"
+            ? "SKIPPED"
+            : assessmentStatus === "UNASSESSED"
+              ? "UNASSESSED"
+              : assessmentStatus === "ABANDONED"
+                ? "ABANDONED"
+                : "IN_PROGRESS",
+      assessmentStatus,
+      levelsCompleted: isAssessed || isPartiallyAssessed
+        ? clampedDone
+        : assessmentStatus === "UNASSESSED"
+          ? 0
+          : clampedDone,
+      averageAccuracy: hasScores ? (recorded?.averageAccuracy ?? null) : null,
+      averageReactionTimeMs: hasScores ? (recorded?.averageReactionTimeMs ?? null) : null,
+      playOrder,
+      isFirstGame,
+      isLastGame,
+      firstAttemptAt: recorded?.firstAttemptAt ?? null,
+      lastAttemptAt: recorded?.lastAttemptAt ?? null,
+      activeDurationMs: recorded?.activeDurationMs ?? null,
       levels: recorded?.levels || [],
     };
   });
 
+  // Calculate fatigue context flags if not passed
+  if (isLateGameFatigueContext === undefined || isLateGameExitContext === undefined) {
+    const attemptedGamesInOrder = [...analyzedGames]
+      .filter((g) => g.playOrder !== null)
+      .sort((a, b) => (a.playOrder || 0) - (b.playOrder || 0));
+
+    const finalAttempted = attemptedGamesInOrder[attemptedGamesInOrder.length - 1];
+    const earlierAssessed = attemptedGamesInOrder
+      .slice(0, -1)
+      .filter((g) => g.assessmentStatus === "ASSESSED" && g.averageAccuracy !== null);
+
+    if (isProlongedSession && attemptedGamesInOrder.length >= 2 && finalAttempted) {
+      if (
+        finalAttempted.assessmentStatus === "SKIPPED" ||
+        finalAttempted.assessmentStatus === "ABANDONED" ||
+        finalAttempted.assessmentStatus === "PARTIALLY_ASSESSED"
+      ) {
+        if (isLateGameExitContext === undefined) isLateGameExitContext = true;
+      }
+      if (earlierAssessed.length > 0 && finalAttempted.averageAccuracy !== null) {
+        const earlierAvg =
+          earlierAssessed.reduce((sum, g) => sum + (g.averageAccuracy || 0), 0) /
+          earlierAssessed.length;
+        if (
+          earlierAvg >= 75 &&
+          (finalAttempted.averageAccuracy < 65 ||
+            earlierAvg - finalAttempted.averageAccuracy >= 20)
+        ) {
+          if (isLateGameFatigueContext === undefined) isLateGameFatigueContext = true;
+        }
+      }
+    }
+  }
+  isLateGameFatigueContext = Boolean(isLateGameFatigueContext);
+  isLateGameExitContext = Boolean(isLateGameExitContext);
+
   // 1. GAME-WISE ANALYSIS (Written in plain English, Grade 5–7 friendly reading level)
   const gameWiseAnalysis = analyzedGames.map((g) => {
-    const isGameSkipped = g.gameStatus === "SKIPPED";
+    const isGameAssessed = g.assessmentStatus === "ASSESSED";
+    const isGamePartiallyAssessed = g.assessmentStatus === "PARTIALLY_ASSESSED";
+    const isGameUnassessed = g.assessmentStatus === "UNASSESSED";
+    const isGameSkipped = g.assessmentStatus === "SKIPPED";
+    const isGameAbandoned = g.assessmentStatus === "ABANDONED";
+    const isGameIncomplete = g.assessmentStatus === "INCOMPLETE";
+
     const done = Math.min(3, Math.max(0, g.levelsCompleted));
-    const acc = isGameSkipped ? null : g.averageAccuracy;
-    const rt = isGameSkipped ? null : g.averageReactionTimeMs;
-    const l1 = isGameSkipped ? null : g.levels.find((l) => l.levelNumber === 1)?.accuracy;
-    const l2 = isGameSkipped ? null : g.levels.find((l) => l.levelNumber === 2)?.accuracy;
-    const l3 = isGameSkipped ? null : g.levels.find((l) => l.levelNumber === 3)?.accuracy;
+    const acc = isGameAssessed || isGamePartiallyAssessed ? g.averageAccuracy : null;
+    const rt = isGameAssessed || isGamePartiallyAssessed ? g.averageReactionTimeMs : null;
+    const l1 = isGameAssessed || isGamePartiallyAssessed ? g.levels.find((l) => l.levelNumber === 1)?.accuracy : null;
+    const l2 = isGameAssessed || isGamePartiallyAssessed ? g.levels.find((l) => l.levelNumber === 2)?.accuracy : null;
+    const l3 = isGameAssessed || isGamePartiallyAssessed ? g.levels.find((l) => l.levelNumber === 3)?.accuracy : null;
 
     const rtText = rt ? ` with an average pace of ${(rt / 1000).toFixed(1)} seconds per trial` : "";
     let summary = "";
     const strengths: string[] = [];
     const practice: string[] = [];
 
-    if (isGameSkipped) {
+    if (isGamePartiallyAssessed) {
+      const completedLvls = g.levels
+        .filter((l) => l.status === "COMPLETED")
+        .map((l) => `Level ${l.levelNumber}`);
+      const uncompletedLvls = g.levels
+        .filter((l) => l.status !== "COMPLETED")
+        .map((l) => {
+          if (l.status === "SKIPPED") return `Level ${l.levelNumber} (skipped)`;
+          if (l.status === "ABANDONED") return `Level ${l.levelNumber} (abandoned)`;
+          return `Level ${l.levelNumber} (not completed)`;
+        });
+
+      const compStr = completedLvls.length > 0 ? completedLvls.join(" and ") : `${done}/3 levels`;
+      const uncompStr = uncompletedLvls.length > 0 ? uncompletedLvls.join(", ") : "remaining levels";
+
+      summary = `${child.childName} completed ${compStr} in ${g.gameName} (${g.domain})${acc !== null ? ` with ${Math.round(acc)}% average accuracy on completed levels` : ""}${rtText}. Because ${uncompStr} were not completed, this activity is partially assessed. These observations are based on partial gameplay and do not indicate any difficulty, weakness, or cognitive deficit.`;
+
+      if (acc !== null && acc >= 70) {
+        strengths.push(`Showed solid engagement and accuracy across completed ${compStr}.`);
+      }
+      practice.push(`Low-pressure home activities to continue exploring ${g.domain.toLowerCase()}.`);
+    } else if (isGameUnassessed) {
+      if (g.gameKey === "card-flip") {
+        summary = `${child.childName} did not take the Cosmic Card Flip activity during this quest session, so visual working memory was not assessed. This does not indicate any difficulty or memory weakness. We recommend providing a fun, relaxed opportunity to play Cosmic Card Flip in a future session.`;
+      } else {
+        summary = `${g.gameName} (${g.domain}) was not assessed during this quest session, so no performance score is recorded. This does not indicate any difficulty or cognitive weakness.`;
+      }
+    } else if (isGameSkipped) {
       summary = `This activity was skipped during the quest session, so no performance score is available for this game. Skipping an activity is completely normal when a child feels tired or prefers different puzzle styles, and does not indicate any cognitive deficit.`;
       if (done > 0) {
         summary += ` ${child.childName} explored Level 1 before moving forward, showing positive curiosity.`;
         strengths.push(`Explored foundational mechanics before transitioning to the next challenge.`);
       }
       practice.push(`Enjoyable, low-pressure home play with ${g.domain.toLowerCase()}.`);
+    } else if (isGameAbandoned || isGameIncomplete) {
+      summary = `${child.childName} started ${g.gameName} (${g.domain}) but did not complete all levels for a full assessment. No final performance score is assigned, which is completely normal.`;
     } else {
       switch (g.gameKey) {
         case "stroop":
@@ -757,17 +1109,41 @@ export function generateRuleBasedReport(
       }
     }
 
+    if (g.isLastGame && isLateGameFatigueContext && isGameAssessed) {
+      summary += ` Because ${g.gameName} was completed toward the end of an extended ${sessionMinutes}-minute quest session, the observed variation in accuracy may reflect natural tiredness after sustained focus rather than difficulty with ${g.domain.toLowerCase()}. We recommend revisiting similar puzzles when fresh to observe baseline confidence.`;
+      practice.push(
+        `Revisit similar playful challenges during a fresh morning session when energy is highest.`
+      );
+    } else if (
+      g.isLastGame &&
+      isLateGameExitContext &&
+      (isGameSkipped || isGameAbandoned || isGamePartiallyAssessed)
+    ) {
+      summary += ` Coming at the conclusion of an extended ${sessionMinutes}-minute quest session, pausing or skipping an activity is a completely normal response to sustained mental effort.`;
+    }
+
     return {
       gameKey: g.gameKey,
       gameName: g.gameName,
       cognitiveDomain: g.domain,
       gameStatus: g.gameStatus,
+      assessmentStatus: g.assessmentStatus,
       levelsCompleted: done,
       averageAccuracy: acc,
       averageReactionTimeMs: rt,
       summary: summary.trim(),
-      observedStrengths: strengths.length > 0 ? strengths : [`Consistent engagement in ${g.gameName}.`],
-      areasForPractice: practice.length > 0 ? practice : [`Continue playful exploration in ${g.domain.toLowerCase()}.`],
+      observedStrengths:
+        strengths.length > 0
+          ? strengths
+          : isGameAssessed
+            ? [`Consistent engagement in ${g.gameName}.`]
+            : [],
+      areasForPractice:
+        practice.length > 0
+          ? practice
+          : isGameAssessed
+            ? [`Continue playful exploration in ${g.domain.toLowerCase()}.`]
+            : [],
     };
   });
 
@@ -776,15 +1152,47 @@ export function generateRuleBasedReport(
   for (const g of analyzedGames) {
     for (let lvl = 1; lvl <= 3; lvl++) {
       const att = g.levels.find((l) => l.levelNumber === lvl);
-      const isLevelSkipped = att?.status === "SKIPPED" || g.gameStatus === "SKIPPED";
-      const acc = isLevelSkipped ? null : (att?.accuracy ?? null);
+      const isExplicitNotCompleted = att?.status === "NOT_COMPLETED";
+      const isLevelUnassessed =
+        !isExplicitNotCompleted &&
+        (g.assessmentStatus === "UNASSESSED" || att?.status === "UNASSESSED");
+      const isLevelSkipped =
+        !isExplicitNotCompleted &&
+        !isLevelUnassessed &&
+        (att?.status === "SKIPPED" || g.assessmentStatus === "SKIPPED");
+      const isLevelAbandoned =
+        !isExplicitNotCompleted &&
+        !isLevelUnassessed &&
+        !isLevelSkipped &&
+        (att?.status === "ABANDONED" || g.assessmentStatus === "ABANDONED");
+      const isLevelCompleted =
+        !isExplicitNotCompleted &&
+        !isLevelUnassessed &&
+        !isLevelSkipped &&
+        !isLevelAbandoned &&
+        att?.status === "COMPLETED";
+
+      const acc = isLevelCompleted ? (att?.accuracy ?? null) : null;
       const duration = att?.durationMs ?? null;
-      const rt = isLevelSkipped ? null : (att?.averageReactionTimeMs ?? null);
-      const status = isLevelSkipped ? "SKIPPED" : att?.status || (acc !== null ? "COMPLETED" : "NOT_COMPLETED");
+      const rt = isLevelCompleted ? (att?.averageReactionTimeMs ?? null) : null;
+
+      let status: string;
+      if (isExplicitNotCompleted) status = "NOT_COMPLETED";
+      else if (isLevelUnassessed) status = "UNASSESSED";
+      else if (isLevelSkipped) status = "SKIPPED";
+      else if (isLevelAbandoned) status = "ABANDONED";
+      else if (isLevelCompleted) status = "COMPLETED";
+      else status = "NOT_COMPLETED";
 
       let insight = `${g.gameName} Level ${lvl}`;
-      if (status === "SKIPPED") {
+      if (status === "UNASSESSED") {
+        insight = `Activity level was not assessed during this session; ready for future fun exploration.`;
+      } else if (status === "SKIPPED") {
         insight = `This activity level was skipped during the session; completely normal when a child feels tired.`;
+      } else if (status === "ABANDONED") {
+        insight = `This activity level was not completed before ending the session.`;
+      } else if (status === "NOT_COMPLETED") {
+        insight = `Activity level was not completed during this session; ready for future exploration.`;
       } else if (status === "COMPLETED" && acc !== null) {
         const paceStr = rt ? ` with a steady pace of ${(rt / 1000).toFixed(1)}s per trial` : "";
         if (acc >= 90) {
@@ -816,7 +1224,7 @@ export function generateRuleBasedReport(
 
   // 3. RANK GAMES FOR EVIDENCE-BASED STRENGTHS & GROWTH AREAS
   const scoredGames = analyzedGames.filter(
-    (g) => g.averageAccuracy !== null && g.gameStatus !== "SKIPPED"
+    (g) => g.assessmentStatus === "ASSESSED" && g.averageAccuracy !== null
   );
   const sortedByAcc = [...scoredGames].sort(
     (a, b) => (b.averageAccuracy ?? 0) - (a.averageAccuracy ?? 0)
@@ -851,10 +1259,9 @@ export function generateRuleBasedReport(
   }
 
   // Consistency & Pacing Strength
-  const avgRtAcross =
-    analyzedGames
-      .map((g) => g.averageReactionTimeMs)
-      .filter((v): v is number => typeof v === "number" && v > 0);
+  const avgRtAcross = analyzedGames
+    .map((g) => g.averageReactionTimeMs)
+    .filter((v): v is number => typeof v === "number" && v > 0);
   const overallAvgRt =
     avgRtAcross.length > 0
       ? Math.round(avgRtAcross.reduce((a, b) => a + b, 0) / avgRtAcross.length)
@@ -883,7 +1290,7 @@ export function generateRuleBasedReport(
     heading: "Active Engagement & Positive Exploration",
     cognitiveSkill: "Task Persistence & Learning Motivation",
     observation: `Across diverse cognitive games, ${child.childName} demonstrated sustained enthusiasm and a willingness to take on new and unfamiliar problem types. In the warm-up, ${child.childName} favored '${warmUp.favoriteSubject}' and approached challenges with a '${warmUp.copingStrategy}' mindset.`,
-    performanceEvidence: `Engaged through ${quest.totalLevelsCompleted} levels totaling ${Math.round(quest.totalDurationMs / 60000)} minutes of focused gameplay, achieving ${quest.overallAccuracy}% overall accuracy.`,
+    performanceEvidence: `Engaged through ${quest.totalLevelsCompleted} levels totaling ${sessionMinutes} minutes of quest engagement, achieving ${quest.overallAccuracy}% overall accuracy.`,
     educationalRelevance: `Curiosity and a growth-oriented mindset are the single greatest predictors of long-term academic enthusiasm and creative self-efficacy.`,
   });
 
@@ -892,20 +1299,34 @@ export function generateRuleBasedReport(
 
   const lowestGame = sortedByAcc[sortedByAcc.length - 1];
   if (lowestGame && (lowestGame.averageAccuracy ?? 100) < 80) {
-    const l1 = lowestGame.levels.find((l) => l.levelNumber === 1)?.accuracy;
-    const l2 = lowestGame.levels.find((l) => l.levelNumber === 2)?.accuracy;
-    const l3 = lowestGame.levels.find((l) => l.levelNumber === 3)?.accuracy;
-    areasForPractice.push({
-      heading: `Nurturing ${lowestGame.domain}`,
-      cognitiveSkill: lowestGame.domain,
-      observedPattern: `In ${lowestGame.gameName}, ${child.childName} recorded performance variation as level complexity progressed${l1 !== undefined && l2 !== undefined ? ` (Level 1: ${l1}%, Level 2: ${l2}%${l3 !== undefined ? `, Level 3: ${l3}%` : ""})` : ""}. As additional visual distractors or complex rules were introduced, accuracy fluctuated.`,
-      performanceEvidence: `Recorded an average accuracy of ${lowestGame.averageAccuracy}% in ${lowestGame.gameName} across ${lowestGame.levelsCompleted} levels.`,
-      recommendedApproach: `Introduce fun, low-pressure everyday activities that exercise ${lowestGame.domain.toLowerCase()} through hands-on household play, gradually increasing complexity as the child gains confidence.`,
-    });
+    if (lowestGame.isLastGame && isLateGameFatigueContext) {
+      areasForPractice.push({
+        heading: `Gentle Practice with ${lowestGame.domain} (Revisit When Fresh)`,
+        cognitiveSkill: lowestGame.domain,
+        observedPattern: `${child.childName} played ${lowestGame.gameName} as the final activity in an extended ${sessionMinutes}-minute quest session. After maintaining high focus across earlier challenges, accuracy varied in this concluding activity (${lowestGame.averageAccuracy}% average accuracy). This pattern naturally reflects sustained mental effort across a long session rather than a learning difficulty.`,
+        performanceEvidence: `Recorded ${lowestGame.averageAccuracy}% in ${lowestGame.gameName} at the end of a ${sessionMinutes}-minute session, following strong performance in earlier games.`,
+        recommendedApproach: `Provide light, playful opportunities to explore ${lowestGame.domain.toLowerCase()} during a fresh morning session or after a restful break, celebrating the sustained stamina demonstrated throughout the quest.`,
+      });
+    } else {
+      const l1 = lowestGame.levels.find((l) => l.levelNumber === 1)?.accuracy;
+      const l2 = lowestGame.levels.find((l) => l.levelNumber === 2)?.accuracy;
+      const l3 = lowestGame.levels.find((l) => l.levelNumber === 3)?.accuracy;
+      areasForPractice.push({
+        heading: `Nurturing ${lowestGame.domain}`,
+        cognitiveSkill: lowestGame.domain,
+        observedPattern: `In ${lowestGame.gameName}, ${child.childName} recorded performance variation as level complexity progressed${l1 !== undefined && l2 !== undefined ? ` (Level 1: ${l1}%, Level 2: ${l2}%${l3 !== undefined ? `, Level 3: ${l3}%` : ""})` : ""}. As additional visual distractors or complex rules were introduced, accuracy fluctuated.`,
+        performanceEvidence: `Recorded an average accuracy of ${lowestGame.averageAccuracy}% in ${lowestGame.gameName} across ${lowestGame.levelsCompleted} levels.`,
+        recommendedApproach: `Introduce fun, low-pressure everyday activities that exercise ${lowestGame.domain.toLowerCase()} through hands-on household play, gradually increasing complexity as the child gains confidence.`,
+      });
+    }
   }
 
   const secondLowest = sortedByAcc[sortedByAcc.length - 2];
-  if (secondLowest && (secondLowest.averageAccuracy ?? 100) < 85 && secondLowest !== lowestGame) {
+  if (
+    secondLowest &&
+    (secondLowest.averageAccuracy ?? 100) < 85 &&
+    secondLowest !== lowestGame
+  ) {
     areasForPractice.push({
       heading: `Strengthening ${secondLowest.domain}`,
       cognitiveSkill: secondLowest.domain,
@@ -916,18 +1337,27 @@ export function generateRuleBasedReport(
   }
 
   // Always supply at least 2 constructive growth areas
-  if (areasForPractice.length < 2) {
-    areasForPractice.push({
-      heading: "Managing Multi-Rule Transitions and Cognitive Flexibility",
-      cognitiveSkill: "Hypothesis Testing & Cognitive Shifting",
-      observedPattern: `As cognitive puzzles transitioned between different problem-solving criteria, performance varied slightly between single-attribute sorting and multi-attribute rule switches.`,
-      performanceEvidence: `Observed across interactive transition stages where sorting rules shifted dynamically between visual features.`,
-      recommendedApproach: `Play playful family sorting games with 'surprise rule switches' using building blocks, laundry socks, or card decks to practice smooth cognitive shifting.`,
-    });
+  while (areasForPractice.length < 2) {
+    if (areasForPractice.length === 0) {
+      areasForPractice.push({
+        heading: "Managing Multi-Rule Transitions and Cognitive Flexibility",
+        cognitiveSkill: "Hypothesis Testing & Cognitive Shifting",
+        observedPattern: `As cognitive puzzles transitioned between different problem-solving criteria, performance varied slightly between single-attribute sorting and multi-attribute rule switches.`,
+        performanceEvidence: `Observed across interactive transition stages where sorting rules shifted dynamically between visual features.`,
+        recommendedApproach: `Play playful family sorting games with 'surprise rule switches' using building blocks, laundry socks, or card decks to practice smooth cognitive shifting.`,
+      });
+    } else {
+      areasForPractice.push({
+        heading: "Navigating Complex Visual Distractors and Strategic Pacing",
+        cognitiveSkill: "Selective Attention & Focus Regulation",
+        observedPattern: `Across higher complexity tiers, thoughtful pacing and deliberate visual scanning supported precision when managing multiple simultaneous distractor elements.`,
+        performanceEvidence: `Observed during transition into higher-level game challenges requiring multi-attribute filtering.`,
+        recommendedApproach: `Engage in everyday observation games like 'I Spy' with multiple attributes (e.g., color + size) to playfully reinforce selective focus and patience.`,
+      });
+    }
   }
 
   // 5. PERSONALIZED HOME ACTIVITIES (4 to 6 rich, practical, screen-free activities)
-  // Activity Catalog tailored to OrionKids cognitive domains
   const activityCatalog: Record<string, HomeActivityItem> = {
     "rule-discovery": {
       title: "Surprise Rule Switching",
@@ -1104,38 +1534,144 @@ export function generateRuleBasedReport(
     },
   };
 
-  // Choose 4-6 activities prioritizing lowest scoring games first, then top strengths
-  const recommendedActivityKeys: string[] = [];
+  // Filter activities strictly to games that were ASSESSED or PARTIALLY_ASSESSED
+  // Strictly do NOT recommend activities for unassessed or skipped games.
+  const assessedGames = analyzedGames.filter(
+    (g) => g.assessmentStatus === "ASSESSED" || g.assessmentStatus === "PARTIALLY_ASSESSED"
+  );
 
-  // Add lowest games first (areas for practice)
-  for (let i = sortedByAcc.length - 1; i >= 0; i--) {
-    const k = sortedByAcc[i]?.gameKey;
-    if (k && activityCatalog[k] && !recommendedActivityKeys.includes(k)) {
-      recommendedActivityKeys.push(k);
-    }
-  }
-  // Add remaining games (to nourish strengths)
-  for (const g of sortedByAcc) {
-    if (g && activityCatalog[g.gameKey] && !recommendedActivityKeys.includes(g.gameKey)) {
+  // If Card Flip was unassessed or skipped, generate warm retry note and omit from scored activities
+  const cardFlipStats = analyzedGames.find((g) => g.gameKey === "card-flip");
+  const isCardFlipAssessed =
+    cardFlipStats?.assessmentStatus === "ASSESSED" ||
+    cardFlipStats?.assessmentStatus === "PARTIALLY_ASSESSED";
+  const cardFlipRetryNote = !isCardFlipAssessed
+    ? `${child.childName} did not explore Cosmic Card Flip during this mission. Whenever ${child.childName} is ready, playing classic picture-matching or card games at home is a wonderful, relaxed way to exercise visual memory together, or you can replay Card Flip in a future OrionKids quest.`
+    : undefined;
+
+  // Choose activities prioritizing lowest scoring assessed games first, then higher scoring
+  const sortedAssessedByAcc = [...assessedGames].sort(
+    (a, b) => (a.averageAccuracy ?? 0) - (b.averageAccuracy ?? 0)
+  );
+
+  const recommendedActivityKeys: string[] = [];
+  for (const g of sortedAssessedByAcc) {
+    if (activityCatalog[g.gameKey] && !recommendedActivityKeys.includes(g.gameKey)) {
       recommendedActivityKeys.push(g.gameKey);
     }
   }
 
+  // Map each selected activity with actual observation findings from telemetry
   const parentRecommendations: HomeActivityItem[] = recommendedActivityKeys
     .slice(0, 5)
-    .map((k) => activityCatalog[k]!);
+    .map((k) => {
+      const template = activityCatalog[k]!;
+      const g = analyzedGames.find((game) => game.gameKey === k);
+      const accStr = g?.averageAccuracy !== null && g?.averageAccuracy !== undefined ? `${g.averageAccuracy}%` : "recorded";
+      const lvlCount = g?.levelsCompleted ?? 0;
+
+      let observedFinding = "";
+      if (k === "stroop") {
+        observedFinding = `In staying-focused challenges, ${child.childName} achieved ${accStr} accuracy across ${lvlCount} completed level${lvlCount === 1 ? "" : "s"}, practicing pausing before clicking as distractor words appeared.`;
+      } else if (k === "pattern") {
+        observedFinding = `In pattern-finding puzzles, ${child.childName} achieved ${accStr} accuracy across ${lvlCount} completed level${lvlCount === 1 ? "" : "s"}, predicting sequence rhythms and missing shapes.`;
+      } else if (k === "odd-one-out") {
+        observedFinding = `While spotting differences, ${child.childName} achieved ${accStr} accuracy across ${lvlCount} completed level${lvlCount === 1 ? "" : "s"}, inspecting visual features and subtle differences across objects.`;
+      } else if (k === "rule-discovery") {
+        observedFinding = `When exploring shifting rules, ${child.childName} achieved ${accStr} accuracy across ${lvlCount} completed level${lvlCount === 1 ? "" : "s"}, testing new ideas as sorting criteria changed.`;
+      } else if (k === "story-sequencing") {
+        observedFinding = `During story sequencing, ${child.childName} achieved ${accStr} accuracy across ${lvlCount} completed level${lvlCount === 1 ? "" : "s"}, arranging narrative cards in timeline order from beginning to end.`;
+      } else if (k === "card-flip") {
+        observedFinding = `In visual card matching, ${child.childName} achieved ${accStr} accuracy across ${lvlCount} completed level${lvlCount === 1 ? "" : "s"}, remembering card pairs and their locations on the board.`;
+      }
+
+      return {
+        ...template,
+        relatedGameKey: k,
+        relatedDomain: g?.domain || template.skillsPracticed[0],
+        observedFinding,
+      };
+    });
+
+  // Identify "Start Here" recommendation: best initial 10-minute activity
+  const startHereGame =
+    sortedAssessedByAcc.length > 0 ? sortedAssessedByAcc[0]! : analyzedGames[0]!;
+  const startHereTemplate =
+    activityCatalog[startHereGame.gameKey] || activityCatalog["rule-discovery"]!;
+  const startHereAcc =
+    startHereGame.averageAccuracy !== null && startHereGame.averageAccuracy !== undefined
+      ? `${startHereGame.averageAccuracy}%`
+      : "observed";
+
+  const startHere: StartHere = {
+    activityTitle: startHereTemplate.title,
+    relatedDomain: startHereGame.domain,
+    relatedGameKey: startHereGame.gameKey,
+    whyThisFirst: `Starting with ${startHereTemplate.title} builds quick confidence and excitement because it turns ${startHereGame.gameName}'s core challenge into an easy, laughter-filled family routine that takes just 10 minutes.`,
+    evidenceCitation: `During ${startHereGame.gameName}, ${child.childName} achieved ${startHereAcc} accuracy across ${startHereGame.levelsCompleted} completed level${startHereGame.levelsCompleted === 1 ? "" : "s"}.`,
+    quickSteps: [
+      "Spend just 5 to 10 minutes together before dinner or after school—keep it short and joyful.",
+      "Demonstrate the first round playfully so there is zero pressure on your child to get it 'right'.",
+      "Celebrate curiosity and creative thinking with a high-five at the end of each round.",
+    ],
+    suggestedDuration: "10 minutes",
+  };
+
+  const whatDoesThisMean = `Think of this quest like a fun obstacle course for the brain! The games gave ${child.childName} different types of playful challenges: holding pictures in mind, pausing before clicking, spotting patterns, and trying new rules. The scores show where ${child.childName} felt most confident today and highlight natural areas where playful practice can help build even greater confidence.`;
+
+  const shouldIWorry: ShouldIWorry = {
+    reassurance: `Not at all! Every child's brain grows at its own unique pace, and this report is simply a helpful snapshot of one playful day—not a diagnosis or a test of intelligence.`,
+    keyPoints: [
+      "Scores naturally go up and down based on tiredness, how familiar the game is, and time of day.",
+      "A lower score in any activity simply means it is an exciting new skill to explore, not a permanent weakness.",
+      "Brain flexibility and focus grow remarkably quickly through simple, joyful games played together at home.",
+    ],
+    teacherPartnershipGuidance: `Share what you discover here with ${child.childName}'s teacher! Ask how ${child.childName} handles multi-step directions or sorting activities in class, and celebrate small daily wins together.`,
+  };
 
   // 6. PROGRESS AND CONSISTENCY
   let progressAndConsistency = "";
-  if (quest.totalLevelsCompleted >= 18) {
-    progressAndConsistency = `${child.childName} completed all 18 levels across the six cognitive exploration games. Performance remained especially reliable across foundational Level 1 tasks (averaging ${quest.overallAccuracy}% across the quest), with consistent attention maintained as multi-attribute rules and distractor elements graduated in Levels 2 and 3. Response pacing demonstrated dependable self-regulation without fatigue-related accuracy drops in later games.`;
+  const firstGameName =
+    analyzedGames.find((g) => g.isFirstGame)?.gameName || "the opening activity";
+  const lastGameName =
+    analyzedGames.find((g) => g.isLastGame)?.gameName || "the concluding activity";
+
+  if (isProlongedSession) {
+    if (isLateGameFatigueContext) {
+      progressAndConsistency = `${child.childName} sustained high focus and positive problem-solving across early and middle activities during this extended ${sessionMinutes}-minute quest session${hasBreaks ? " (which included healthy breaks between activities)" : ""}. In ${lastGameName}, performance naturally varied, which is a very normal response following sustained concentration across multiple challenges.`;
+    } else if (isLateGameExitContext) {
+      progressAndConsistency = `${child.childName} demonstrated sustained engagement through earlier challenges during an extended ${sessionMinutes}-minute quest session. Taking a break or concluding before completing ${lastGameName} reflects healthy self-regulation following prolonged mental effort.`;
+    } else if (
+      quest.totalLevelsCompleted >= 18 ||
+      (sortedByAcc.length > 0 && sortedByAcc.every((g) => (g.averageAccuracy ?? 0) >= 70))
+    ) {
+      progressAndConsistency = `${child.childName} completed an extended ${sessionMinutes}-minute quest session${hasBreaks ? " with healthy pauses between activities" : ""}, displaying remarkable stamina and steady focus from ${firstGameName} through ${lastGameName}. Accuracy and response pacing remained dependable throughout, showing excellent task persistence without fatigue-related accuracy drops.`;
+    } else {
+      progressAndConsistency = `${child.childName} completed ${quest.totalLevelsCompleted} levels during an extended ${sessionMinutes}-minute quest session${hasBreaks ? " with intervals between games" : ""}, displaying steady curiosity and positive perseverance across progressively challenging stages.`;
+    }
   } else {
-    progressAndConsistency = `${child.childName} engaged purposefully across ${quest.totalLevelsCompleted} evaluated levels, displaying steady curiosity. Performance was strongest in initial game stages, with healthy exploratory problem-solving observed as novel rules and cognitive requirements were introduced.`;
+    if (quest.totalLevelsCompleted >= 18) {
+      progressAndConsistency = `${child.childName} completed all 18 levels across the six cognitive exploration games in a well-paced ${sessionMinutes}-minute session${hasBreaks ? " with restful intervals" : ""}. Performance remained especially reliable across foundational Level 1 tasks (averaging ${quest.overallAccuracy}% across the quest), with consistent attention maintained as multi-attribute rules and distractor elements graduated in Levels 2 and 3. Response pacing demonstrated dependable self-regulation throughout.`;
+    } else {
+      progressAndConsistency = `${child.childName} engaged purposefully across ${quest.totalLevelsCompleted} evaluated levels during a ${sessionMinutes}-minute session, displaying steady curiosity. Performance was strongest in initial game stages, with healthy exploratory problem-solving observed as novel rules and cognitive requirements were introduced.`;
+    }
   }
 
   // 7. OVERALL PERFORMANCE SUMMARY (100–150 words)
   const topDomainName = sortedByAcc[0]?.domain || "Visual Working Memory";
-  const overallPerformanceSummary = `${child.childName} engaged enthusiastically throughout the OrionKids Cognitive Exploration quest, completing ${quest.totalLevelsCompleted} levels across six diverse cognitive domains with an overall accuracy of ${quest.overallAccuracy}%. Performance was highlighted by notable proficiency in ${topDomainName}, where ${child.childName} demonstrated confident problem-solving and focused attention. In the warm-up, ${child.childName} favored '${warmUp.favoriteSubject}' and approached challenges with a constructive '${warmUp.copingStrategy}' mindset. When navigating more complex multi-attribute rules in later levels, performance showed natural variation, offering wonderful opportunities for continued playful practice at home. Through screen-free sorting, memory, and storytelling routines, parents can joyfully nurture ${child.childName}'s natural curiosity and cognitive confidence.`;
+  let overallPerformanceSummary = "";
+
+  if (isProlongedSession && isLateGameFatigueContext) {
+    overallPerformanceSummary = `${child.childName} engaged with great enthusiasm throughout an extended ${sessionMinutes}-minute OrionKids Cognitive Exploration quest, completing ${quest.totalLevelsCompleted} levels across multiple cognitive domains with an overall accuracy of ${quest.overallAccuracy}%. Performance was highlighted by notable proficiency in ${topDomainName}, where ${child.childName} demonstrated confident problem-solving and focused attention across earlier activities. In the warm-up, ${child.childName} favored '${warmUp.favoriteSubject}' and approached challenges with a constructive '${warmUp.copingStrategy}' mindset. Toward the conclusion of this extended session, performance in ${lastGameName} naturally varied, reflecting normal tired attention after sustained concentration rather than a difficulty. Through playful, screen-free home routines revisited when fresh, parents can continue to nurture ${child.childName}'s natural curiosity and cognitive confidence.`;
+  } else if (
+    isProlongedSession &&
+    (quest.totalLevelsCompleted >= 18 ||
+      (sortedByAcc.length > 0 && sortedByAcc.every((g) => (g.averageAccuracy ?? 0) >= 70)))
+  ) {
+    overallPerformanceSummary = `${child.childName} engaged with remarkable stamina and enthusiasm throughout an extended ${sessionMinutes}-minute OrionKids Cognitive Exploration quest, completing ${quest.totalLevelsCompleted} levels across six diverse cognitive domains with an overall accuracy of ${quest.overallAccuracy}%. Performance was highlighted by exceptional persistence and proficiency in ${topDomainName}, where ${child.childName} maintained steady attention from ${firstGameName} through ${lastGameName}. In the warm-up, ${child.childName} favored '${warmUp.favoriteSubject}' and approached challenges with a constructive '${warmUp.copingStrategy}' mindset. Across all evaluated games, ${child.childName} demonstrated consistent self-regulation and thoughtful decision pacing. Through screen-free sorting, memory, and storytelling routines, parents can joyfully celebrate ${child.childName}'s impressive stamina and cognitive strengths.`;
+  } else {
+    overallPerformanceSummary = `${child.childName} engaged enthusiastically throughout the OrionKids Cognitive Exploration quest, completing ${quest.totalLevelsCompleted} levels across six diverse cognitive domains with an overall accuracy of ${quest.overallAccuracy}%. Performance was highlighted by notable proficiency in ${topDomainName}, where ${child.childName} demonstrated confident problem-solving and focused attention. In the warm-up, ${child.childName} favored '${warmUp.favoriteSubject}' and approached challenges with a constructive '${warmUp.copingStrategy}' mindset. When navigating more complex multi-attribute rules in later levels, performance showed natural variation, offering wonderful opportunities for continued playful practice at home. Through screen-free sorting, memory, and storytelling routines, parents can joyfully nurture ${child.childName}'s natural curiosity and cognitive confidence.`;
+  }
 
   return {
     reportTitle: "OrionKids Cognitive Exploration & Gameplay Report",
@@ -1146,8 +1682,12 @@ export function generateRuleBasedReport(
     }', a preference for '${warmUp.learningStyle}' learning, and a constructive '${
       warmUp.copingStrategy
     }' strategy when working through unfamiliar puzzles.`,
-    questSummary: `Across 6 diverse games and 18 progressively challenging levels, ${child.childName} achieved an overall accuracy of ${quest.overallAccuracy}% across ${Math.round(quest.totalDurationMs / 60000)} minutes of active gameplay, completing ${quest.totalLevelsCompleted}/18 evaluated levels.`,
+    questSummary: `Across 6 diverse games and 18 progressively challenging levels, ${child.childName} achieved an overall accuracy of ${quest.overallAccuracy}% across a ${sessionMinutes}-minute session (${Math.round((quest.activeGameplayDurationMs || quest.totalDurationMs) / 60000)} minutes of active gameplay${hasBreaks ? ", with healthy intervals between activities" : ""}), completing ${quest.totalLevelsCompleted}/18 evaluated levels.`,
     overallPerformanceSummary: overallPerformanceSummary.trim(),
+    whatDoesThisMean,
+    shouldIWorry,
+    startHere,
+    cardFlipRetryNote,
     gameWiseAnalysis,
     levelWisePerformance,
     observedStrengths,
