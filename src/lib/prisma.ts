@@ -21,13 +21,96 @@ if (isTest) {
   }
 }
 
+/**
+ * Normalizes PostgreSQL / Neon connection strings and resolves SSL parameters.
+ * - Converts 'sslmode=require', 'sslmode=prefer', and 'sslmode=verify-ca' to 'sslmode=verify-full'
+ *   to eliminate pg-connection-string deprecation warnings and ensure genuine certificate validation.
+ * - Appends 'sslmode=verify-full' for Neon connections if no sslmode is specified.
+ * - Does not enable SSL for local databases (e.g., localhost, 127.0.0.1, sslmode=disable).
+ * - Enforces verified TLS in production without setting rejectUnauthorized: false unless
+ *   explicitly authorized by PG_SSL_ALLOW_INSECURE=true or NODE_TLS_REJECT_UNAUTHORIZED=0.
+ */
+export function normalizeDatabaseConnectionString(rawUrl: string): {
+  normalizedConnectionString: string;
+  isNeon: boolean;
+  sslRequired: boolean;
+} {
+  if (!rawUrl) {
+    return {
+      normalizedConnectionString: rawUrl,
+      isNeon: false,
+      sslRequired: false,
+    };
+  }
+
+  const isNeon = rawUrl.includes("neon.tech");
+  let sslRequired = false;
+
+  try {
+    const parsed = new URL(rawUrl);
+    const sslmode = parsed.searchParams.get("sslmode");
+
+    if (
+      isNeon ||
+      sslmode === "require" ||
+      sslmode === "prefer" ||
+      sslmode === "verify-ca"
+    ) {
+      parsed.searchParams.set("sslmode", "verify-full");
+      sslRequired = true;
+    } else if (sslmode === "verify-full") {
+      sslRequired = true;
+    } else if (sslmode === "disable") {
+      sslRequired = false;
+    }
+
+    return {
+      normalizedConnectionString: parsed.toString(),
+      isNeon,
+      sslRequired,
+    };
+  } catch {
+    let normalized = rawUrl;
+    if (
+      rawUrl.includes("sslmode=require") ||
+      rawUrl.includes("sslmode=prefer") ||
+      rawUrl.includes("sslmode=verify-ca")
+    ) {
+      normalized = rawUrl
+        .replace(/sslmode=require/g, "sslmode=verify-full")
+        .replace(/sslmode=prefer/g, "sslmode=verify-full")
+        .replace(/sslmode=verify-ca/g, "sslmode=verify-full");
+      sslRequired = true;
+    } else if (isNeon) {
+      normalized +=
+        (normalized.includes("?") ? "&" : "?") + "sslmode=verify-full";
+      sslRequired = true;
+    }
+    return {
+      normalizedConnectionString: normalized,
+      isNeon,
+      sslRequired,
+    };
+  }
+}
+
 const activeConnectionString = isTest
   ? env.DATABASE_URL_TEST!
   : env.DATABASE_URL;
-const isNeonConnection = activeConnectionString.includes("neon.tech");
+
+const {
+  normalizedConnectionString,
+  isNeon: isNeonConnection,
+  sslRequired: isSslRequired,
+} = normalizeDatabaseConnectionString(activeConnectionString);
+
 const useNeonWebSocket =
   process.env.USE_NEON_WEBSOCKET === "true" ||
   process.env.USE_NEON_WEBSOCKET === "1";
+
+const allowInsecureTls =
+  process.env.PG_SSL_ALLOW_INSECURE === "true" ||
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0";
 
 let adapter: PrismaNeon | PrismaPg;
 
@@ -36,7 +119,7 @@ let activePool: PgPool | null = null;
 if (useNeonWebSocket && isNeonConnection) {
   adapter = new PrismaNeon(
     {
-      connectionString: activeConnectionString,
+      connectionString: normalizedConnectionString,
       max: 20,
       idleTimeoutMillis: 60_000,
       connectionTimeoutMillis: 45_000,
@@ -54,19 +137,16 @@ if (useNeonWebSocket && isNeonConnection) {
     }
   );
 } else {
-  const isSslRequired =
-    activeConnectionString.includes("sslmode=require") ||
-    activeConnectionString.includes("sslmode=verify-full") ||
-    isNeonConnection;
-
   const pgPool = new PgPool({
-    connectionString: activeConnectionString,
+    connectionString: normalizedConnectionString,
     max: 20,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
     keepAlive: true,
     keepAliveInitialDelayMillis: 10_000,
-    ...(isSslRequired ? { ssl: { rejectUnauthorized: false } } : {}),
+    ...(allowInsecureTls && isSslRequired
+      ? { ssl: { rejectUnauthorized: false } }
+      : {}),
   });
   activePool = pgPool;
   pgPool.on("error", (err) => {

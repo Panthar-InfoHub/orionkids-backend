@@ -1623,7 +1623,7 @@ export function generateRuleBasedReport(
     reassurance: `Not at all! Every child's brain grows at its own unique pace, and this report is simply a helpful snapshot of one playful day—not a diagnosis or a test of intelligence.`,
     keyPoints: [
       "Scores naturally go up and down based on tiredness, how familiar the game is, and time of day.",
-      "A lower score in any activity simply means it is an exciting new skill to explore, not a permanent weakness.",
+      "A lower score in any activity simply means it is an exciting new skill to explore, not a permanent limitation.",
       "Brain flexibility and focus grow remarkably quickly through simple, joyful games played together at home.",
     ],
     teacherPartnershipGuidance: `Share what you discover here with ${child.childName}'s teacher! Ask how ${child.childName} handles multi-step directions or sorting activities in class, and celebrate small daily wins together.`,

@@ -1,6 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { prisma } from "../src/lib/prisma.js";
+import { prisma, disconnectPrisma } from "../src/lib/prisma.js";
 import {
   generateOrGetReport,
   type AssessmentStatus,
@@ -118,7 +118,7 @@ describe("Phase 2: Chronological Game Analysis & Fatigue-Aware Interpretation Te
     } catch {
       // Ignore cleanup errors
     } finally {
-      await prisma.$disconnect();
+      await disconnectPrisma();
     }
   });
 

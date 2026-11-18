@@ -2317,7 +2317,7 @@ export async function generateReportPdf(
       reassurance: `Not at all! Every child's brain grows at its own unique pace, and this report is simply a helpful snapshot of one playful day—not a diagnosis or a test of intelligence.`,
       keyPoints: [
         "Scores naturally go up and down based on tiredness, how familiar the game is, and time of day.",
-        "A lower score in any activity simply means it is an exciting new skill to explore, not a permanent weakness.",
+        "A lower score in any activity simply means it is an exciting new skill to explore, not a permanent limitation.",
       ],
       teacherPartnershipGuidance: `Share what you discover here with ${displayChildName}'s teacher! Ask how ${displayChildName} handles multi-step directions in class, and celebrate small daily wins together.`,
     };
